@@ -928,3 +928,110 @@ test('celestia: a broken chain read fails the read rather than falling back to t
   };
   await assert.rejects(readSupply(TIA_RULE), /503|bad Celestia/);
 });
+
+// AVAX. Real responses captured 2026-11-25 04:58 UTC:
+//   Data API   GET  data-api.avax.network/v1/avax/supply
+//   P-Chain    POST api.avax.network/ext/bc/P  platform.getCurrentSupply   (nAVAX, 9 decimals)
+//   C-Chain    POST api.avax.network/ext/bc/C/rpc  eth_getBalance(blackhole) (wei, 18 decimals) = 5,164,719.5 AVAX
+const AVAX_API = 'https://data-api.avax.network/v1/avax/supply';
+const AVAX_BLACKHOLE = '0x0100000000000000000000000000000000000000';
+const avaxApiBody = () => ({
+  totalSupply: '470398053.0812057370679591530', circulatingSupply: '470398053.0812057370679591530',
+  totalPBurned: '20447.95961731096915705083706', totalCBurned: '5157997.843298279892831740772',
+  totalXBurned: '45627.31235855819265822198508', totalStaked: '222366897.350666',
+  totalLocked: '26110272.21462205941662859665', totalRewards: '115622126.1964798861226061666',
+  lastUpdated: new Date(Date.now() - 13 * 60e3).toISOString(), genesisUnlock: '360000000',
+  l1ValidatorFees: '19665.06538700800003517981297',
+});
+function fakeAvax({ api = avaxApiBody(), apiStatus = 200, pSupply = '476887586839519195', pError = null, cBurn = '0x445ac01be0662d0bbe5ab' } = {}) {
+  const calls = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    const reply = (body, status = 200) => ({ ok: status === 200, status, json: async () => body });
+    if (u === AVAX_API) { calls.push('data-api'); return reply(api, apiStatus); }
+    const req = JSON.parse(opts.body);
+    calls.push(req.method);
+    if (u === 'https://api.avax.network/ext/bc/P') {
+      assert.equal(req.method, 'platform.getCurrentSupply');
+      return reply(pError ? { jsonrpc: '2.0', id: req.id, error: { code: -32000, message: pError } } : { jsonrpc: '2.0', id: req.id, result: { supply: pSupply, height: '25940106' } });
+    }
+    assert.equal(u, 'https://api.avax.network/ext/bc/C/rpc');
+    assert.equal(req.method, 'eth_getBalance');
+    assert.deepEqual(req.params, [AVAX_BLACKHOLE, 'latest']);
+    return reply({ jsonrpc: '2.0', id: req.id, result: cBurn });
+  };
+  return calls;
+}
+const avaxRule = () => JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8')).avalanche;
+
+test('AVAX: publishes Avalanche\'s figure, P-Chain supply minus P, C and X burns, with staked AVAX circulating', async () => {
+  const rule = avaxRule();
+  assert.equal(rule.symbol, 'AVAX');
+  assert.deepEqual(rule.supply, { method: 'avax', max: 720000000 });
+  const calls = fakeAvax();
+  const s = await readSupply(rule.supply);
+  assert.deepEqual(calls.sort(), ['data-api', 'eth_getBalance', 'platform.getCurrentSupply']);
+  assert.ok(Math.abs(s.total - 470398053.0812057) < 1e-6);
+  assert.equal(s.circulating, s.total, 'staked AVAX is not subtracted');
+  // genesis + rewards - burns is the published total
+  const burned = s.excluded.reduce((t, e) => t + e.amount, 0);
+  assert.ok(Math.abs(360000000 + 115622126.19647989 - burned - s.total) < 1e-3);
+  assert.deepEqual(s.excluded.map(e => e.reason.match(/on the (\w)-Chain/)[1]), ['C', 'X', 'P']);
+  assert.equal(s.excluded[0].holder, AVAX_BLACKHOLE);
+  assert.equal(s.excluded[0].src, 'https://snowtrace.io/address/' + AVAX_BLACKHOLE);
+  assert.ok(!s.excluded.some(e => /stake/i.test(e.reason)), 'stake is not listed as excluded');
+  assert.match(s.note, /Staked AVAX \(222,366,897\) counts as circulating/);
+  assert.match(s.note, /blackhole address holds 5,164,720 AVAX/);
+  assert.match(s.note, /476,887,587 AVAX from platform\.getCurrentSupply/);
+  assert.equal(s.src, AVAX_API);
+  assert.equal(s.max, 720000000);
+  assert.equal(s.checked, true);
+});
+
+test('AVAX: circulating above total, or below it, fails the read', async () => {
+  fakeAvax({ api: { ...avaxApiBody(), circulatingSupply: '470398100' } });
+  await assert.rejects(readSupply({ method: 'avax' }), /above total/);
+  // Avalanche subtracting stake (or anything else) would change the method: stop and review instead of publishing.
+  fakeAvax({ api: { ...avaxApiBody(), circulatingSupply: '248031155.7' } });
+  await assert.rejects(readSupply({ method: 'avax' }), /review the rule/);
+});
+
+test('AVAX: missing, NaN or non-numeric fields fail instead of publishing NaN', async () => {
+  for (const [field, value] of [['totalSupply', undefined], ['circulatingSupply', 'NaN'], ['totalCBurned', '-5'], ['totalRewards', 1e8], ['totalStaked', '']]) {
+    fakeAvax({ api: { ...avaxApiBody(), [field]: value } });
+    await assert.rejects(readSupply({ method: 'avax' }), new RegExp(field + ' is not a number'), field);
+  }
+});
+
+test('AVAX: HTTP and RPC errors fail the read', async () => {
+  fakeAvax({ apiStatus: 429 });
+  await assert.rejects(readSupply({ method: 'avax' }), /429/);
+  fakeAvax({ pError: 'node not bootstrapped' });
+  await assert.rejects(readSupply({ method: 'avax' }), /getCurrentSupply: node not bootstrapped/);
+  fakeAvax({ pSupply: null });
+  await assert.rejects(readSupply({ method: 'avax' }), /no P-Chain supply/);
+  fakeAvax({ cBurn: null });
+  await assert.rejects(readSupply({ method: 'avax' }), /bad C-Chain blackhole balance/);
+});
+
+test('AVAX: the Data API figure must add up and match the chain', async () => {
+  // a burn the total does not reflect
+  fakeAvax({ api: { ...avaxApiBody(), totalXBurned: '55627.31' } });
+  await assert.rejects(readSupply({ method: 'avax' }), /do not add up/);
+  // C-Chain burn more than 0.5% away from the blackhole balance
+  fakeAvax({ cBurn: '0x' + (5300000n * 10n ** 18n).toString(16) });
+  await assert.rejects(readSupply({ method: 'avax' }), /C-Chain burn/);
+  // minted above the P-Chain upper bound (wrong network or a broken API)
+  fakeAvax({ pSupply: '470000000000000000' });
+  await assert.rejects(readSupply({ method: 'avax' }), /above the P-Chain upper bound/);
+  // minted far below the P-Chain supply (stale API)
+  fakeAvax({ pSupply: '490000000000000000' });
+  await assert.rejects(readSupply({ method: 'avax' }), /more than 1% below/);
+});
+
+test('AVAX: a stale Data API fails the read', async () => {
+  fakeAvax({ api: { ...avaxApiBody(), lastUpdated: new Date(Date.now() - 3 * 24 * 3600e3).toISOString() } });
+  await assert.rejects(readSupply({ method: 'avax' }), /too old/);
+  fakeAvax({ api: { ...avaxApiBody(), lastUpdated: 'yesterday' } });
+  await assert.rejects(readSupply({ method: 'avax' }), /too old/);
+});

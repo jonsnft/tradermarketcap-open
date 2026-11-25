@@ -26,6 +26,13 @@ const BSC_TOKENHUB = '0x0000000000000000000000000000000000001004';
 const BSC_ZERO = '0x0000000000000000000000000000000000000000';
 const BNB_TRACKER = 'https://www.bnbburn.info/api/getBnbSupply';
 
+// AVAX: Avalanche's Data API supply endpoint (docs.avax.network/docs/api-reference/data-api/avax-supply/getAvaxSupply), the P-Chain
+// API, and the C-Chain blackhole address that every C-Chain fee is sent to. See the avax method below.
+const AVAX_SUPPLY_API = 'https://data-api.avax.network/v1/avax/supply';
+const AVAX_P_RPC = 'https://api.avax.network/ext/bc/P';
+const AVAX_BLACKHOLE = '0x0100000000000000000000000000000000000000';
+const AVAX_MAX_AGE_MS = 2 * 24 * 3600e3;
+
 // Native BNB balance of one BSC address, read from BNB Chain's public RPC.
 async function bscBalance(addr) {
   const hex = await evm('bsc', 'eth_getBalance', [addr, 'latest']);
@@ -447,6 +454,79 @@ const METHODS = {
       parts: [{ chain: 'aptos', amount: total, src: url }],
       excluded: [],
       note: `Circulating is the Aptos Foundation's own published figure from its Current Token Supply API (${SUPPLY_API}, linked from aptos.dev), which already nets out locked community/foundation vesting and the 210M APT AIP-140 permanent stake. Total is the live chain read of 0x1::coin::supply and agrees with the Foundation's reported total to within 1 APT. Gas fees are burned, so they are already excluded from both.`,
+    };
+  },
+  // AVAX (Avalanche), per Avalanche's own published method: P-Chain supply (the 360M AVAX genesis plus the staking
+  // rewards minted since) minus the AVAX burned on the P-, C- and X-Chains. Staked AVAX stays circulating, as for
+  // staked ETH and SOL: Avalanche's Data API (the feed behind its explorer and the Core wallet) reports
+  // circulatingSupply equal to totalSupply and lists totalStaked on its own line without subtracting it.
+  // The API's figure is published only when the chain backs it up, on every pass:
+  //  - its own parts add up: genesis + rewards − P, C and X burns = totalSupply (within 1 AVAX);
+  //  - the C-Chain burn it reports matches the balance of the C-Chain blackhole address, where every C-Chain
+  //    fee is sent and can never leave (within 0.5%; the API counts a little less than the address holds);
+  //  - its minted figure (genesis + rewards) is not above the P-Chain's platform.getCurrentSupply, which Avalanche
+  //    documents as an upper bound that takes no burn off, and is within 1% of it;
+  //  - it was updated within the last two days.
+  // An HTTP or RPC error, a missing or non-numeric field, circulating above total, circulating below total (Avalanche
+  // would then be subtracting something, so the rule needs a review) or any failed check fails the read, and the
+  // site keeps the last good number.
+  async avax() {
+    const now = Date.now();
+    const [api, pRes, cHex] = await Promise.all([
+      getJSON(AVAX_SUPPLY_API),
+      getJSON(AVAX_P_RPC, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'platform.getCurrentSupply', params: {} }),
+      }),
+      evm('avax', 'eth_getBalance', [AVAX_BLACKHOLE, 'latest']),
+    ]);
+    const num = (field) => {
+      const raw = api?.[field];
+      const v = typeof raw === 'string' && /^\d+(\.\d+)?$/.test(raw) ? Number(raw) : NaN;
+      if (!Number.isFinite(v)) throw new Error(`avax: Data API ${field} is not a number (${raw})`);
+      return v;
+    };
+    const total = num('totalSupply');
+    const circulating = num('circulatingSupply');
+    const genesis = num('genesisUnlock');
+    const rewards = num('totalRewards');
+    const staked = num('totalStaked');
+    const burns = { P: num('totalPBurned'), C: num('totalCBurned'), X: num('totalXBurned') };
+    if (!(total > 0)) throw new Error('avax: empty total supply');
+    if (circulating > total) throw new Error(`avax: circulating ${circulating} above total ${total}`);
+    if (circulating < total - 1) throw new Error(`avax: Data API circulating ${circulating} is below total ${total}; Avalanche now subtracts something, review the rule`);
+    if (!(staked < total)) throw new Error(`avax: staked ${staked} not below total ${total}`);
+    const updated = Date.parse(api.lastUpdated);
+    if (!(now - updated <= AVAX_MAX_AGE_MS)) throw new Error(`avax: Data API last updated ${api.lastUpdated}, too old`);
+
+    const minted = genesis + rewards;
+    const burned = burns.P + burns.C + burns.X;
+    if (Math.abs(minted - burned - total) > 1) throw new Error(`avax: Data API parts do not add up (${minted} - ${burned} != ${total})`);
+
+    if (pRes?.error) throw new Error(`avax platform.getCurrentSupply: ${pRes.error.message || JSON.stringify(pRes.error)}`);
+    const pRaw = pRes?.result?.supply;
+    if (typeof pRaw !== 'string' || !/^\d+$/.test(pRaw)) throw new Error('avax: no P-Chain supply');
+    const pSupply = Number(BigInt(pRaw) / 1000n) / 1e6; // nAVAX, 9 decimals
+    if (minted > pSupply + 1) throw new Error(`avax: Data API minted ${minted} above the P-Chain upper bound ${pSupply}`);
+    if (pSupply - minted > pSupply * 0.01) throw new Error(`avax: Data API minted ${minted} more than 1% below the P-Chain supply ${pSupply}`);
+
+    if (typeof cHex !== 'string' || !/^0x[0-9a-f]+$/i.test(cHex)) throw new Error('avax: bad C-Chain blackhole balance');
+    const cChain = Number(BigInt(cHex) / 10n ** 12n) / 1e6; // wei, 18 decimals
+    if (!(cChain > 0) || Math.abs(cChain - burns.C) > cChain * 0.005) throw new Error(`avax: Data API C-Chain burn ${burns.C} vs blackhole balance ${cChain}`);
+
+    const cExplorer = `${EXPLORER.avax}/address/${AVAX_BLACKHOLE}`;
+    const fmt = v => Math.round(v).toLocaleString('en-US');
+    return {
+      circulating: total,
+      total,
+      src: AVAX_SUPPLY_API,
+      excluded: [
+        { reason: 'Burned on the C-Chain (fees, sent to the blackhole address)', holder: AVAX_BLACKHOLE, amount: burns.C, src: cExplorer },
+        { reason: 'Burned on the X-Chain (fees)', amount: burns.X, src: AVAX_SUPPLY_API },
+        { reason: 'Burned on the P-Chain (fees)', amount: burns.P, src: AVAX_SUPPLY_API },
+      ],
+      note: `Avalanche's own figure from its Data API (${AVAX_SUPPLY_API}): P-Chain supply, ${fmt(genesis)} AVAX genesis plus ${fmt(rewards)} AVAX of staking rewards minted since, minus ${fmt(burned)} AVAX burned on the C-, X- and P-Chains (listed above, so they are out of both figures). Staked AVAX (${fmt(staked)}) counts as circulating, as for staked ETH and SOL. Checked against the chain on every read: the C-Chain blackhole address holds ${fmt(cChain)} AVAX, and the P-Chain reports ${fmt(pSupply)} AVAX from platform.getCurrentSupply, an upper bound that takes no burn off.`,
     };
   },
   // Jupiter's own Token API publishes circulating supply for its tokens, already net of
