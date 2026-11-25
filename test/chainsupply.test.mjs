@@ -1050,3 +1050,106 @@ test('avax: the seed rule attaches to the avalanche coin id served by the site',
   assert.equal(avalanche.supply.method, 'avax');
   assert.equal(avalanche.supply.max, 720000000);
 });
+
+// TAP, from Trac's TAP Protocol reader. Real responses captured 2026-11-25 (test/fixtures/tap-reader.json).
+const TAP_FX = JSON.parse(readFileSync(new URL('./fixtures/tap-reader.json', import.meta.url), 'utf8'));
+const TAP_BURN = '1BitcoinEaterAddressDontSendf59kuE';
+const TAP_R1 = 'https://reader.tapscope.io', TAP_R2 = 'https://tap-reader.example.org';
+const tapLocks = () => structuredClone(TAP_FX['getTickerLocks/tap?offset=0&max=500']);
+// readers: { base: { path: body | { status } } } on top of the captured responses.
+function fakeTap(readers = { [TAP_R1]: {} }) {
+  const calls = [];
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    const base = Object.keys(readers).find(b => u.startsWith(b + '/'));
+    assert.ok(base, 'unexpected url ' + u);
+    const p = u.slice(base.length + 1);
+    calls.push(base + ' ' + p);
+    const body = p in readers[base] ? readers[base][p] : structuredClone(TAP_FX[p]);
+    if (body?.status) return { ok: false, status: body.status, json: async () => ({}) };
+    assert.ok(body !== undefined, 'no fixture for ' + p);
+    return { ok: true, status: 200, json: async () => body };
+  };
+  return calls;
+}
+const tapRule = () => JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8')).tap;
+
+test('TAP: total = minted minus burned from the TAP reader, HTLC trade escrow stays circulating', async () => {
+  delete process.env.TMC_TAP_READER2;
+  const rule = tapRule();
+  assert.deepEqual(rule.supply, { method: 'tap', max: 21000000 });
+  const calls = fakeTap();
+  const s = await readSupply(rule.supply);
+  assert.equal(s.max, 21000000);
+  assert.equal(s.total, 21000000 - 5882.11);
+  assert.equal(s.circulating, s.total, 'HTLC escrow is not subtracted');
+  assert.deepEqual(s.excluded, [{ reason: 'Burned (sent to the TAP burn address)', holder: TAP_BURN, amount: 5882.11, src: `${TAP_R1}/getBalance/${TAP_BURN}/tap` }]);
+  assert.equal(s.src, `${TAP_R1}/getDeployment/tap`);
+  assert.match(s.note, /21,000,000 TAP minted \(fixed 21,000,000 max, fully minted\) minus 5,882 TAP held by the TAP burn address/);
+  assert.match(s.note, /3 TAP marketplace HTLC escrows \(302 TAP\) are trade listings/);
+  assert.ok(calls.some(c => c.endsWith('getTickerLocks/tap?offset=0&max=500')));
+  assert.equal(s.checked, true);
+});
+
+test('TAP: TAP in any other lock kind is subtracted from circulating and listed', async () => {
+  const locks = tapLocks();
+  locks.result[2] = { ...locks.result[2], kind: 'time', remaining: '250000000000000000000000' }; // 250,000 TAP
+  fakeTap({ [TAP_R1]: { 'getTickerLocks/tap?offset=0&max=500': locks } });
+  const s = await readSupply({ method: 'tap' });
+  assert.equal(s.total, 21000000 - 5882.11);
+  assert.equal(s.circulating, s.total - 250000);
+  assert.deepEqual(s.excluded[1], { reason: 'Locked in 1 TAP Protocol "time" lock', amount: 250000, src: `${TAP_R1}/getTickerLocksByKind/tap/time` });
+  assert.match(s.note, /subtracted from circulating/);
+  assert.match(s.note, /2 TAP marketplace HTLC escrows/);
+});
+
+test('TAP: reader down, NaN or a wrong deployment fail the read', async () => {
+  fakeTap({ [TAP_R1]: { 'getMintTokensLeft/tap': { status: 502 } } });
+  await assert.rejects(readSupply({ method: 'tap' }), /502/);
+  for (const [p, body, re] of [
+    ['getMintTokensLeft/tap', { result: 'NaN' }, /mint tokens left is not an amount/],
+    [`getBalance/${TAP_BURN}/tap`, { result: '-5' }, /burned balance is not an amount/],
+    ['getDeployment/tap', { result: { ...TAP_FX['getDeployment/tap'].result, dec: 8 } }, /unexpected deployment/],
+    ['getDeployment/tap', { result: { ...TAP_FX['getDeployment/tap'].result, tick: 'tapx' } }, /unexpected deployment/],
+    ['getDeployment/tap', { result: { ...TAP_FX['getDeployment/tap'].result, max: '21000001000000000000000000' } }, /not 21,000,000 TAP/],
+    ['getDeployment/tap', {}, /unexpected deployment/],
+  ]) {
+    fakeTap({ [TAP_R1]: { [p]: body } });
+    await assert.rejects(readSupply({ method: 'tap' }), re, p);
+  }
+});
+
+test('TAP: burn balance and the burn address token list must agree', async () => {
+  fakeTap({ [TAP_R1]: { [`getBalance/${TAP_BURN}/tap`]: { result: '5882110000000000000001' } } });
+  await assert.rejects(readSupply({ method: 'tap' }), /burn address balance .* != its token list/);
+});
+
+test('TAP: an incomplete or malformed lock list fails the read; circulating can never come out above total', async () => {
+  fakeTap({ [TAP_R1]: { 'getTickerLocksLength/tap': { result: 4 } } });
+  await assert.rejects(readSupply({ method: 'tap' }), /lock list has 3 of 4/);
+  const bad = tapLocks(); bad.result[0].tick = 'trac';
+  fakeTap({ [TAP_R1]: { 'getTickerLocks/tap?offset=0&max=500': bad } });
+  await assert.rejects(readSupply({ method: 'tap' }), /bad lock entry/);
+  const neg = tapLocks(); neg.result[1].remaining = '-1';
+  fakeTap({ [TAP_R1]: { 'getTickerLocks/tap?offset=0&max=500': neg } });
+  await assert.rejects(readSupply({ method: 'tap' }), /lock remaining is not an amount/);
+  const huge = tapLocks(); huge.result[0] = { ...huge.result[0], kind: 'time', remaining: '30000000000000000000000000' };
+  fakeTap({ [TAP_R1]: { 'getTickerLocks/tap?offset=0&max=500': huge } });
+  await assert.rejects(readSupply({ method: 'tap' }), /outside 0\.\.total/);
+});
+
+test('TAP: a second reader (TMC_TAP_READER2) must agree on minted and burned', async () => {
+  process.env.TMC_TAP_READER2 = TAP_R2 + '/';
+  try {
+    fakeTap({ [TAP_R1]: {}, [TAP_R2]: { [`getBalance/${TAP_BURN}/tap`]: { result: '5900000000000000000000' }, [`getAccountTokensBalance/${TAP_BURN}?offset=0&max=100`]: { data: { total: 1, list: [{ ticker: 'tap', overallBalance: '5900000000000000000000', transferableBalance: '' }] } } } });
+    const s = await readSupply({ method: 'tap' });
+    assert.equal(s.total, 21000000 - 5882.11, 'within tolerance: the first reader is published');
+    assert.match(s.note, /Cross-checked against https:\/\/tap-reader\.example\.org\./);
+    fakeTap({ [TAP_R1]: {}, [TAP_R2]: { 'getMintTokensLeft/tap': { result: '1000000000000000000' } } });
+    await assert.rejects(readSupply({ method: 'tap' }), /minted .* !=/);
+    fakeTap({ [TAP_R1]: {}, [TAP_R2]: { [`getBalance/${TAP_BURN}/tap`]: { result: '9000000000000000000000' }, [`getAccountTokensBalance/${TAP_BURN}?offset=0&max=100`]: { data: { total: 1, list: [{ ticker: 'tap', overallBalance: '9000000000000000000000', transferableBalance: '' }] } } } });
+    await assert.rejects(readSupply({ method: 'tap' }), /burned .* !=/);
+  } finally {
+    delete process.env.TMC_TAP_READER2;
+  }
+});

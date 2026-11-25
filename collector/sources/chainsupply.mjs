@@ -26,6 +26,69 @@ const BSC_TOKENHUB = '0x0000000000000000000000000000000000001004';
 const BSC_ZERO = '0x0000000000000000000000000000000000000000';
 const BNB_TRACKER = 'https://www.bnbburn.info/api/getBnbSupply';
 
+// TAP (TAP Protocol on Bitcoin, by Trac). Trac's public TAP Protocol reader: the REST reader Trac's own Digital Matter
+// World kit reads on mainnet. Trac's older socket endpoint, tap.trac.network, now answers 502. A second reader (any
+// Trac tap-reader REST endpoint) can be added with TMC_TAP_READER2, and then has to agree. See the tap method below.
+const TAP_READER = 'https://reader.tapscope.io';
+// The canonical TAP burn address (TAP Protocol specs, target type "b": "burns to the canonical burn address").
+const TAP_BURN_ADDRESS = '1BitcoinEaterAddressDontSendf59kuE';
+const TAP_MAX = 21000000n * 10n ** 18n; // fixed at deploy: 21,000,000 TAP, 18 decimals
+const TAP_PAGE = 500;
+
+const tapAtomic = (v, what) => {
+  if (typeof v === 'string' && /^\d+$/.test(v)) return BigInt(v);
+  if (typeof v === 'number' && Number.isSafeInteger(v) && v >= 0) return BigInt(v);
+  throw new Error(`tap: ${what} is not an amount (${JSON.stringify(v)})`);
+};
+const tapNum = a => Number(a / 10n ** 12n) / 1e6; // 18 decimals -> TAP, exact to 1e-6
+
+// One reader's view of TAP: minted, burned, and the TAP in protocol locks by kind.
+async function tapRead(base) {
+  const get = p => getJSON(`${base}/${p}`);
+  const [dep, left, burnBal, burnList, lockLen] = await Promise.all([
+    get('getDeployment/tap'),
+    get('getMintTokensLeft/tap'),
+    get(`getBalance/${TAP_BURN_ADDRESS}/tap`),
+    get(`getAccountTokensBalance/${TAP_BURN_ADDRESS}?offset=0&max=100`),
+    get('getTickerLocksLength/tap'),
+  ]);
+  const d = dep?.result;
+  if (d?.tick !== 'tap' || d.dec !== 18) throw new Error(`tap: ${base} returned an unexpected deployment`);
+  const max = tapAtomic(d.max, 'deployment max');
+  if (max !== TAP_MAX) throw new Error(`tap: deployment max ${d.max} is not 21,000,000 TAP`);
+  const minted = max - tapAtomic(left?.result, 'mint tokens left');
+  if (!(minted > 0n && minted <= max)) throw new Error(`tap: minted ${minted} outside 0..max`);
+
+  // Burned, read two ways from the reader: the address balance and the address's token list. They must agree.
+  const burned = burnBal?.result === null ? 0n : tapAtomic(burnBal?.result, 'burned balance');
+  const list = burnList?.data;
+  if (!Array.isArray(list?.list) || !Number.isSafeInteger(list.total)) throw new Error('tap: bad burn address token list');
+  const row = list.list.find(r => String(r?.ticker).toLowerCase() === 'tap');
+  if (!row && list.list.length < list.total) throw new Error('tap: burn address token list incomplete');
+  const listed = row ? tapAtomic(row.overallBalance, 'burn address token balance') : 0n;
+  if (listed !== burned) throw new Error(`tap: burn address balance ${burned} != its token list ${listed}`);
+  if (!(burned < minted)) throw new Error('tap: burned not below minted');
+
+  // Protocol locks on TAP, all pages.
+  const count = Number(tapAtomic(lockLen?.result, 'lock count'));
+  const locks = [];
+  for (let offset = 0; offset < count; offset += TAP_PAGE) {
+    const page = (await get(`getTickerLocks/tap?offset=${offset}&max=${TAP_PAGE}`))?.result;
+    if (!Array.isArray(page) || page.length === 0) throw new Error('tap: bad lock list');
+    locks.push(...page);
+  }
+  if (locks.length !== count) throw new Error(`tap: lock list has ${locks.length} of ${count}`);
+  const byKind = new Map();
+  for (const l of locks) {
+    if (String(l?.tick).toLowerCase() !== 'tap' || typeof l.kind !== 'string' || !l.kind) throw new Error('tap: bad lock entry');
+    const k = byKind.get(l.kind) || { n: 0, amount: 0n };
+    k.n++;
+    k.amount += tapAtomic(l.remaining, 'lock remaining');
+    byKind.set(l.kind, k);
+  }
+  return { base, minted, burned, byKind };
+}
+
 // Native BNB balance of one BSC address, read from BNB Chain's public RPC.
 async function bscBalance(addr) {
   const hex = await evm('bsc', 'eth_getBalance', [addr, 'latest']);
@@ -447,6 +510,48 @@ const METHODS = {
       parts: [{ chain: 'aptos', amount: total, src: url }],
       excluded: [],
       note: `Circulating is the Aptos Foundation's own published figure from its Current Token Supply API (${SUPPLY_API}, linked from aptos.dev), which already nets out locked community/foundation vesting and the 210M APT AIP-140 permanent stake. Total is the live chain read of 0x1::coin::supply and agrees with the Foundation's reported total to within 1 APT. Gas fees are burned, so they are already excluded from both.`,
+    };
+  },
+  // TAP: total = minted minus burned, read from Trac's TAP Protocol reader (see tapRead above). TAP was deployed with a
+  // fixed 21,000,000 max and is fully minted. Burned = the TAP held by the canonical burn address. Circulating = total
+  // minus TAP in protocol locks that hold it back from its owner. HTLC locks are the TAP marketplace's trade escrow:
+  // a listing that goes to the buyer or back to the seller (refund height), so that TAP stays circulating, like
+  // tokens on an exchange order book. Any other lock kind is subtracted and listed.
+  // (TAP Protocol also treats outputs that cannot be credited to a valid address as burned; the reader keeps no
+  // balance for those, so they are not in the burned figure and total can only be overstated by them, never under.)
+  // HTTP errors, a wrong deployment, NaN, a malformed or incomplete lock list, readers that disagree, or circulating
+  // above total fail the read.
+  async tap() {
+    const bases = [TAP_READER, ...(process.env.TMC_TAP_READER2 ? [process.env.TMC_TAP_READER2.replace(/\/+$/, '')] : [])];
+    const reads = await Promise.all(bases.map(tapRead));
+    const [a, ...more] = reads;
+    for (const b of more) {
+      if (b.minted !== a.minted) throw new Error(`tap: ${b.base} minted ${b.minted} != ${a.base} ${a.minted}`);
+      const gap = a.burned > b.burned ? a.burned - b.burned : b.burned - a.burned;
+      if (gap * 100n > a.burned && gap > 100n * 10n ** 18n) throw new Error(`tap: ${b.base} burned ${b.burned} != ${a.base} ${a.burned}`);
+    }
+    const escrow = a.byKind.get('htlc') || { n: 0, amount: 0n };
+    const lockedKinds = [...a.byKind].filter(([kind]) => kind !== 'htlc');
+    const locked = lockedKinds.reduce((t, [, k]) => t + k.amount, 0n);
+    const totalA = a.minted - a.burned;
+    const circA = totalA - locked;
+    if (circA > totalA || circA < 0n) throw new Error(`tap: circulating ${circA} outside 0..total ${totalA}`);
+    const total = tapNum(totalA), circulating = tapNum(circA);
+    if (!Number.isFinite(total) || !Number.isFinite(circulating) || !(total > 0)) throw new Error('tap: bad numbers');
+    const fmt = v => Math.round(tapNum(v)).toLocaleString('en-US');
+    return {
+      circulating,
+      total,
+      max: tapNum(TAP_MAX),
+      src: `${TAP_READER}/getDeployment/tap`,
+      excluded: [
+        { reason: 'Burned (sent to the TAP burn address)', holder: TAP_BURN_ADDRESS, amount: tapNum(a.burned), src: `${TAP_READER}/getBalance/${TAP_BURN_ADDRESS}/tap` },
+        ...lockedKinds.map(([kind, k]) => ({ reason: `Locked in ${k.n} TAP Protocol "${kind}" lock${k.n === 1 ? '' : 's'}`, amount: tapNum(k.amount), src: `${TAP_READER}/getTickerLocksByKind/tap/${kind}` })),
+      ],
+      note: `Read from Trac's TAP Protocol reader (${TAP_READER}): ${fmt(a.minted)} TAP minted (fixed 21,000,000 max, fully minted) minus ${fmt(a.burned)} TAP held by the TAP burn address ${TAP_BURN_ADDRESS}.`
+        + (lockedKinds.length ? ' TAP held in protocol locks is subtracted from circulating (listed above).' : ' No TAP is held in a protocol lock that keeps it from its owner.')
+        + (escrow.n ? ` ${escrow.n} TAP marketplace HTLC escrows (${fmt(escrow.amount)} TAP) are trade listings that go to the buyer or back to the seller, so they stay circulating.` : '')
+        + (more.length ? ` Cross-checked against ${more.map(b => b.base).join(', ')}.` : ''),
     };
   },
   // Jupiter's own Token API publishes circulating supply for its tokens, already net of

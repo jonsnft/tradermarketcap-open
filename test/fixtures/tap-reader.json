@@ -1,0 +1,250 @@
+{
+ "captured": "2026-11-25T08:26:22.285Z",
+ "reader": "https://reader.tapscope.io",
+ "note": "Real responses. The lock list is cut to its first 3 entries (the reader had 143 HTLC locks); tests set getTickerLocksLength to match.",
+ "getDeployment/tap": {
+  "result": {
+   "tick": "tap",
+   "max": "21000000000000000000000000",
+   "lim": "21000000000000000000000000",
+   "dec": 18,
+   "blck": 801996,
+   "tx": "cbc1900b8b0f02fdf481137c587896781a721a35369d4eae47c7445622ecb671",
+   "vo": 0,
+   "val": "546",
+   "ins": "cbc1900b8b0f02fdf481137c587896781a721a35369d4eae47c7445622ecb671i0",
+   "num": 21953432,
+   "ts": 1691356378,
+   "addr": "bc1pcf4jawvk9gjhjske5mch045szhtgsgpt4df5ftnqpxlc27qtaxyqxxmjsf",
+   "crsd": false,
+   "dmt": false,
+   "elem": null,
+   "prj": null,
+   "dim": null,
+   "dt": null,
+   "prv": null,
+   "dta": null
+  }
+ },
+ "getMintTokensLeft/tap": {
+  "result": "0"
+ },
+ "getBalance/1BitcoinEaterAddressDontSendf59kuE/tap": {
+  "result": "5882110000000000000000"
+ },
+ "getAccountTokensBalance/1BitcoinEaterAddressDontSendf59kuE?offset=0&max=100": {
+  "data": {
+   "total": 12,
+   "list": [
+    {
+     "ticker": "gib",
+     "overallBalance": "601920866000000000000000000",
+     "transferableBalance": ""
+    },
+    {
+     "ticker": "troll",
+     "overallBalance": "2100000000000000000000000",
+     "transferableBalance": ""
+    },
+    {
+     "ticker": "stonks",
+     "overallBalance": "20930334000000000000000000",
+     "transferableBalance": ""
+    },
+    {
+     "ticker": "karma",
+     "overallBalance": "930000000000000000000",
+     "transferableBalance": ""
+    },
+    {
+     "ticker": "bored",
+     "overallBalance": "4201000000000000000000",
+     "transferableBalance": ""
+    },
+    {
+     "ticker": "taparoo",
+     "overallBalance": "1787100000000000000000000",
+     "transferableBalance": ""
+    },
+    {
+     "ticker": "xbr",
+     "overallBalance": "10718750000000000",
+     "transferableBalance": ""
+    },
+    {
+     "ticker": "hypermall",
+     "overallBalance": "15000000000000000000",
+     "transferableBalance": ""
+    },
+    {
+     "ticker": "agentbud",
+     "overallBalance": "9999000000000000000",
+     "transferableBalance": ""
+    },
+    {
+     "ticker": "shill",
+     "overallBalance": "9999000000000000000",
+     "transferableBalance": ""
+    },
+    {
+     "ticker": "aibuddy",
+     "overallBalance": "9999000000000000000",
+     "transferableBalance": ""
+    },
+    {
+     "ticker": "tap",
+     "overallBalance": "5882110000000000000000",
+     "transferableBalance": ""
+    }
+   ]
+  }
+ },
+ "getTickerLocksLength/tap": {
+  "result": 3
+ },
+ "getTickerLocks/tap?offset=0&max=500": {
+  "result": [
+   {
+    "id": "93419d79d68e3327b647ec71eb3571e1db19252e0219b479042660659764a659i0:0",
+    "owner": "bc1pldtajcf7mwvgajk4ar5t8xnfrqksmu9zlcfvqw8dcrnwmd4sskksmct2rw",
+    "auth": "1ab43e781c1d6f33fb10def8386ccde6da57f399aafd951de9aac157bffb1c39i0",
+    "kind": "htlc",
+    "tick": "tap",
+    "amt": "1000000000000000000",
+    "remaining": "1000000000000000000",
+    "claim": "bc1paug205zdqgwt7kvkdxsr7fc6yd6znuwnnctvn52n6h2rwh7satwqwsejd9",
+    "refund": "bc1pldtajcf7mwvgajk4ar5t8xnfrqksmu9zlcfvqw8dcrnwmd4sskksmct2rw",
+    "condition": {
+     "type": "hashlock",
+     "hash": "55b0d7ec035d1698bf2ddbee37b27c5e1eaa8e6a3d6f0f98c538a334de4911c0"
+    },
+    "refund_after": 953132,
+    "data": {
+     "cp": "cfc7ef53e087ba3bffb5e0ea323304d0cebbbbfdda8fa2a4275566eaa0c4f745",
+     "dom": "tap-marketplace-mainnet-v1",
+     "ext": {
+      "aid": "BTC",
+      "ak": "native",
+      "cid": "bitcoin:mainnet",
+      "dec": "8",
+      "ns": "bitcoin",
+      "sid": "native-bitcoin-script",
+      "sk": "bitcoin-htlc",
+      "sym": "BTC"
+     },
+     "fee": "bps-200",
+     "hh": "55b0d7ec035d1698bf2ddbee37b27c5e1eaa8e6a3d6f0f98c538a334de4911c0",
+     "oid": "quote-mq3glmp3-bxycua",
+     "pol": "tap-1-bitcoin-mainnet-1",
+     "tap": {
+      "dep": "cbc1900b8b0f02fdf481137c587896781a721a35369d4eae47c7445622ecb671i0",
+      "net": "bitcoin:mainnet",
+      "tick": "tap"
+     },
+     "v": "xc1"
+    },
+    "blck": 952700,
+    "tx": "93419d79d68e3327b647ec71eb3571e1db19252e0219b479042660659764a659",
+    "vo": 0,
+    "val": "546",
+    "ins": "93419d79d68e3327b647ec71eb3571e1db19252e0219b479042660659764a659i0",
+    "num": 126608583,
+    "ts": 1780818490
+   },
+   {
+    "id": "544cb64f982989c46f7360bfc2b21c8f9f1d9223976144deea2163cb0a31fd3ci0:0",
+    "owner": "bc1pldtajcf7mwvgajk4ar5t8xnfrqksmu9zlcfvqw8dcrnwmd4sskksmct2rw",
+    "auth": "1ab43e781c1d6f33fb10def8386ccde6da57f399aafd951de9aac157bffb1c39i0",
+    "kind": "htlc",
+    "tick": "tap",
+    "amt": "1000000000000000000",
+    "remaining": "1000000000000000000",
+    "claim": "bc1paug205zdqgwt7kvkdxsr7fc6yd6znuwnnctvn52n6h2rwh7satwqwsejd9",
+    "refund": "bc1pldtajcf7mwvgajk4ar5t8xnfrqksmu9zlcfvqw8dcrnwmd4sskksmct2rw",
+    "condition": {
+     "type": "hashlock",
+     "hash": "e7e37f43aebea2b63cbaebb2b6fd70420c4a7e55d5d87205291f4a5203e4311a"
+    },
+    "refund_after": 953149,
+    "data": {
+     "cp": "73eb0ee6974e9357a6aecc7472d5e22a039dd4b9d5e5d45f19cd3908f25cd8bf",
+     "dom": "tap-marketplace-mainnet-v1",
+     "ext": {
+      "aid": "0xdac17f958d2ee523a2206206994597c13d831ec7",
+      "ak": "erc20",
+      "cid": "1",
+      "dec": "6",
+      "ns": "eip155",
+      "sid": "0xc6df985b9a20BC7E645c1aBC847F732E53d6E815",
+      "sk": "evm-htlc",
+      "sym": "USDT"
+     },
+     "fee": "bps-200",
+     "hh": "e7e37f43aebea2b63cbaebb2b6fd70420c4a7e55d5d87205291f4a5203e4311a",
+     "oid": "quote-mq3c45vm-l7jd6c",
+     "pol": "tap-1-eip155-1-12",
+     "tap": {
+      "dep": "cbc1900b8b0f02fdf481137c587896781a721a35369d4eae47c7445622ecb671i0",
+      "net": "bitcoin:mainnet",
+      "tick": "tap"
+     },
+     "v": "xc1"
+    },
+    "blck": 952704,
+    "tx": "544cb64f982989c46f7360bfc2b21c8f9f1d9223976144deea2163cb0a31fd3c",
+    "vo": 0,
+    "val": "546",
+    "ins": "544cb64f982989c46f7360bfc2b21c8f9f1d9223976144deea2163cb0a31fd3ci0",
+    "num": 126608710,
+    "ts": 1780821610
+   },
+   {
+    "id": "f3ac7f49ea08749644f023d53a09ae73cd9e9dc1fa548aca9e58bd8cc1d354a1i0:0",
+    "owner": "bc1pldtajcf7mwvgajk4ar5t8xnfrqksmu9zlcfvqw8dcrnwmd4sskksmct2rw",
+    "auth": "1ab43e781c1d6f33fb10def8386ccde6da57f399aafd951de9aac157bffb1c39i0",
+    "kind": "htlc",
+    "tick": "tap",
+    "amt": "300000000000000000000",
+    "remaining": "300000000000000000000",
+    "claim": "bc1paug205zdqgwt7kvkdxsr7fc6yd6znuwnnctvn52n6h2rwh7satwqwsejd9",
+    "refund": "bc1pldtajcf7mwvgajk4ar5t8xnfrqksmu9zlcfvqw8dcrnwmd4sskksmct2rw",
+    "condition": {
+     "type": "hashlock",
+     "hash": "af687232fee899c50e5c45a4fb98dae6a1f14d849c3792530e0da3c3d5fea914"
+    },
+    "refund_after": 953161,
+    "data": {
+     "cp": "012f3c9fa36913d38fb6277b2e7c3971c00383b8812dcbe2e6ae4c267b8657b5",
+     "dom": "tap-marketplace-mainnet-v1",
+     "ext": {
+      "aid": "BTC",
+      "ak": "native",
+      "cid": "bitcoin:mainnet",
+      "dec": "8",
+      "ns": "bitcoin",
+      "sid": "native-bitcoin-script",
+      "sk": "bitcoin-htlc",
+      "sym": "BTC"
+     },
+     "fee": "bps-200",
+     "hh": "af687232fee899c50e5c45a4fb98dae6a1f14d849c3792530e0da3c3d5fea914",
+     "oid": "quote-mq3u17h3-9gg0g2",
+     "pol": "tap-1-bitcoin-mainnet-1",
+     "tap": {
+      "dep": "cbc1900b8b0f02fdf481137c587896781a721a35369d4eae47c7445622ecb671i0",
+      "net": "bitcoin:mainnet",
+      "tick": "tap"
+     },
+     "v": "xc1"
+    },
+    "blck": 952729,
+    "tx": "f3ac7f49ea08749644f023d53a09ae73cd9e9dc1fa548aca9e58bd8cc1d354a1",
+    "vo": 0,
+    "val": "546",
+    "ins": "f3ac7f49ea08749644f023d53a09ae73cd9e9dc1fa548aca9e58bd8cc1d354a1i0",
+    "num": 126610491,
+    "ts": 1780841480
+   }
+  ]
+ }
+}
