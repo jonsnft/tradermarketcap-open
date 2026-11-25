@@ -1,7 +1,10 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { readSupply } from '../collector/sources/chainsupply.mjs';
+import { tnkReset } from '../collector/sources/trac.mjs';
 
 // Real response shapes, captured from BNB Chain's public RPC and bnbburn.info on 2026-11-21. No network in tests.
 const BALANCES = {
@@ -1152,4 +1155,147 @@ test('TAP: a second reader (TMC_TAP_READER2) must agree on minted and burned', a
   } finally {
     delete process.env.TMC_TAP_READER2;
   }
+});
+
+// TNK, from Trac's Main Settlement Bus API. Real response shapes in test/fixtures/tnk-msb.json.
+const TNK_FX = JSON.parse(readFileSync(new URL('./fixtures/tnk-msb.json', import.meta.url), 'utf8'));
+const TNK_API_URL = 'https://tracapi.trac.network/v1';
+const T = n => (BigInt(Math.round(n * 1e6)) * 10n ** 12n).toString(); // TNK -> atomic string
+const TNK_A = 'trac1mvu5ar22mej7el995tugyynxfthdwh95puklq00rrjrhj9hxq2asz4dx93'; // sender in the real payloads
+const TNK_B = 'trac1376drmts39jksahm3plf634tpt8nkpg8ejatqanfdyvflzl0qcwqxx32ps';
+const TNK_V = 'trac1hyg3mv57fph35qev4xsa74n7rey2lkg9puq9yzq6aq84r023ldcqyk889z'; // a validator, initialized in the type 3 payload
+const TNK_NEW = TNK_FX.payloads[13].payload.tro.to; // first seen in the scanned transfer
+function tnkSeed(over = {}) {
+  const f = path.join(os.tmpdir(), `tnk-seed-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+  writeFileSync(f, JSON.stringify({ confirmedLength: 1368999, initialized: T(1000), initRecords: 10, htlc: [], accounts: [TNK_A, TNK_B, TNK_V], ...over }));
+  process.env.TMC_TNK_SEED = f;
+}
+// world: { length, payloads: [results], balances: {addr: [balance, staked]}, fail: {pathPrefix: status}, htlc: {id: escrow} }
+function fakeTnk(world) {
+  const calls = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    assert.ok(u.startsWith(TNK_API_URL + '/'), 'unexpected url ' + u);
+    const p = u.slice(TNK_API_URL.length + 1);
+    calls.push(p.split('/')[0]);
+    const fail = Object.entries(world.fail || {}).find(([k]) => p.startsWith(k));
+    const reply = (body, status = 200) => ({ ok: status === 200, status, json: async () => body });
+    if (fail) return reply({ error: 'x' }, fail[1]);
+    if (p === 'confirmed-length') return reply({ confirmed_length: world.length });
+    if (p.startsWith('tx-hashes/')) {
+      const [s, e] = p.split('/').slice(1).map(Number);
+      return reply({ hashes: world.payloads.map(r => ({ hash: r.hash, confirmed_length: r.at })).filter(h => h.confirmed_length >= s && h.confirmed_length <= e) });
+    }
+    if (p === 'tx-payloads-bulk') {
+      const want = JSON.parse(opts.body).hashes;
+      const results = world.payloads.filter(r => want.includes(r.hash)).map(({ hash, payload }) => ({ hash, payload }));
+      return reply({ results, missing: world.missing || want.filter(h => !results.some(r => r.hash === h)) });
+    }
+    if (p.startsWith('account/')) {
+      const a = p.slice(8), [b, s] = world.balances[a] || ['0', '0'];
+      return reply({ ...TNK_FX.account, address: a, balance: b, stakedBalance: s });
+    }
+    if (p.startsWith('htlc/')) {
+      const e = world.htlc?.[p.slice(5)];
+      return e ? reply(e) : reply({ error: 'not found' }, 404);
+    }
+    throw new Error('unhandled ' + p);
+  };
+  return calls;
+}
+const tnkLedger = () => [
+  { ...TNK_FX.payloads[13], at: 1369000 },
+  { ...TNK_FX.payloads[12], at: 1369003 },
+  { ...TNK_FX.payloads[3], at: 1369006 }, // initializes 1 TNK
+];
+const tnkBalances = () => ({ [TNK_A]: [T(600), '0'], [TNK_B]: [T(390), '0'], [TNK_V]: ['0', T(5)], [TNK_NEW]: [T(5.5), '0'] });
+
+test('TNK: total is every MSB account summed, the ledger scan finds new accounts, circulating withheld', async () => {
+  tnkReset(); tnkSeed();
+  const rule = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'))['trac-network'];
+  assert.deepEqual(rule.supply, { method: 'tnk', circulating: false });
+  const w = { length: 1369006, payloads: tnkLedger(), balances: tnkBalances() };
+  let calls = fakeTnk(w);
+  const s = await readSupply(rule.supply);
+  assert.equal(s.total, 1000.5, '600 + 390 + 5 staked + 5.5 at the new address');
+  assert.equal(s.circulating, null);
+  assert.equal(s.max, null);
+  assert.equal(s.excluded.length, 1);
+  assert.equal(s.excluded[0].amount, 0.5, '1,001 initialized (1,000 + 1 in the scan) minus 1,000.5 held');
+  assert.match(s.note, /at ledger length 1,369,006: the sum of all 4 accounts holding TNK \(996 TNK in balances, 5 TNK staked by validators\)/);
+  assert.match(s.note, /1,001 TNK were initialized by the TRAC BRC-20 upgrade \(11 balance initializations/);
+  assert.match(s.note, /Circulating is withheld/);
+  assert.ok(calls.filter(c => c === 'account').length >= 4 && calls.includes('tx-hashes'));
+  // Next read: nothing new on the ledger, so no scan; accounts are read again.
+  w.balances[TNK_A] = [T(599.9), '0'];
+  calls = fakeTnk(w);
+  const s2 = await readSupply(rule.supply);
+  assert.ok(!calls.includes('tx-hashes'), 'no rescan');
+  assert.equal(Math.round(s2.total * 10) / 10, 1000.4);
+});
+
+test('TNK: circulating = total when the rule does not withhold it', async () => {
+  tnkReset(); tnkSeed();
+  fakeTnk({ length: 1369006, payloads: tnkLedger(), balances: tnkBalances() });
+  const s = await readSupply({ method: 'tnk' });
+  assert.equal(s.circulating, s.total);
+  assert.match(s.note, /Staked TNK counts as circulating/);
+});
+
+test('TNK: more TNK than ever initialized, or more than 1% unaccounted for, fails the read', async () => {
+  tnkReset(); tnkSeed();
+  fakeTnk({ length: 1369006, payloads: tnkLedger(), balances: { ...tnkBalances(), [TNK_A]: [T(700), '0'] } });
+  await assert.rejects(readSupply({ method: 'tnk' }), /more than the .* ever initialized/);
+  tnkReset();
+  fakeTnk({ length: 1369006, payloads: tnkLedger(), balances: { ...tnkBalances(), [TNK_A]: [T(500), '0'] } });
+  await assert.rejects(readSupply({ method: 'tnk' }), /more than 1% of the initialized supply/);
+});
+
+test('TNK: API errors, NaN and incomplete ledger reads fail, and the next read scans again', async () => {
+  tnkReset(); tnkSeed();
+  const w = { length: 1369006, payloads: tnkLedger(), balances: tnkBalances(), fail: { [`account/${TNK_B}`]: 503 } };
+  fakeTnk(w);
+  await assert.rejects(readSupply({ method: 'tnk' }), /503/);
+  delete w.fail;
+  w.balances[TNK_B] = ['NaN', '0'];
+  fakeTnk(w);
+  await assert.rejects(readSupply({ method: 'tnk' }), /balance is not an amount/);
+  w.balances[TNK_B] = [T(390), '0'];
+  w.missing = [TNK_FX.payloads[12].hash];
+  fakeTnk(w);
+  await assert.rejects(readSupply({ method: 'tnk' }), /incomplete tx payloads/);
+  delete w.missing;
+  const calls = fakeTnk(w);
+  const s = await readSupply({ method: 'tnk' });
+  assert.ok(calls.includes('tx-hashes'), 'failed reads did not move the scan position');
+  assert.equal(s.total, 1000.5);
+  fakeTnk({ ...w, length: 'x' });
+  await assert.rejects(readSupply({ method: 'tnk' }), /bad confirmed length/);
+});
+
+test('TNK: TNK in an open HTLC escrow counts until it is claimed', async () => {
+  tnkReset(); tnkSeed();
+  const id = 'ab'.repeat(32);
+  // HTLC_LOCK payload, fields as in the MSB proto (htlc_lock_operation.proto) and OpenAPI HtlcEscrow schema.
+  const lock = { hash: 'cd'.repeat(32), at: 1369005, payload: { type: 17, address: TNK_B, hlo: { tx: id, ca: TNK_A, ra: TNK_B, am: T(0.4), fa: T(0.05), va: TNK_V } } };
+  const w = { length: 1369006, payloads: [...tnkLedger(), lock], balances: { ...tnkBalances(), [TNK_B]: [T(389.55), '0'] },
+    htlc: { [id]: { lockId: id, status: 'PENDING', amount: T(0.4), additionalFeeAmount: T(0.05) } } };
+  fakeTnk(w);
+  const s = await readSupply({ method: 'tnk' });
+  assert.equal(s.total, 1000.5, '0.45 TNK left B for the escrow and is still counted');
+  assert.match(s.note, /0 TNK in 1 open HTLC escrow/);
+  w.htlc[id].status = 'CLAIMED';
+  w.balances[TNK_A] = [T(600.4), '0'];
+  const calls = fakeTnk(w);
+  const s2 = await readSupply({ method: 'tnk' });
+  assert.equal(Math.round(s2.total * 100) / 100, 1000.45, 'claimed: 0.4 to A, the 0.05 surcharge to a recipient with no balance in this test');
+  assert.ok(calls.includes('htlc'));
+});
+
+test('TNK: a seed checkpoint too far behind the ledger asks for a rebuild', async () => {
+  tnkReset(); tnkSeed({ confirmedLength: 100 });
+  fakeTnk({ length: 1369006, payloads: [], balances: {} });
+  await assert.rejects(readSupply({ method: 'tnk' }), /rebuild it with tools\/tnk-accounts\.mjs/);
+  delete process.env.TMC_TNK_SEED;
+  tnkReset();
 });

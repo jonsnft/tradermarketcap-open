@@ -1,0 +1,104 @@
+{
+ "captured": "2026-11-25",
+ "source": "https://tracapi.trac.network/v1",
+ "note": "Real responses from Trac's MSB API: three tx-hashes from range 1369000-1369006, one payload each of type 3 (balance initialization), 11 (bootstrap deployment), 12 (tx) and 13 (transfer), and one account.",
+ "hashes": {
+  "hashes": [
+   {
+    "hash": "be01cde9d9758a09117a33b382dd0c2e7ab2ade03fd384d0a133bf583ea95227",
+    "confirmed_length": 1369000
+   },
+   {
+    "hash": "aaf69e40fb3c274ee0f4cb8037a6c427206caece1550888d64af09a4bd23e8bd",
+    "confirmed_length": 1369003
+   },
+   {
+    "hash": "69ebf073b92808a15a68b8f869f83b6f8c7af7a5aeba452e9509bb590842a74b",
+    "confirmed_length": 1369006
+   }
+  ]
+ },
+ "payloads": {
+  "3": {
+   "hash": "6641baabac7e4815815876f90a7529f230a3d996209561803c1e05789b06c300",
+   "payload": {
+    "type": 3,
+    "address": "trac1mvu5ar22mej7el995tugyynxfthdwh95puklq00rrjrhj9hxq2asz4dx93",
+    "bio": {
+     "tx": "6641baabac7e4815815876f90a7529f230a3d996209561803c1e05789b06c300",
+     "txv": "d4fe29ffd563cba4c1726f4f4c8e00f367209b7a3f4e6c20c3108041efe69e4c",
+     "ia": "trac1hyg3mv57fph35qev4xsa74n7rey2lkg9puq9yzq6aq84r023ldcqyk889z",
+     "am": "1000000000000000000",
+     "in": "e4077b82b15056428502a60ae12745e0d203b887a3ee4730c2a4d3e0b36c8858",
+     "is": "49aaa5d651813ac9ecfa4bf50038617cecb9602443dea92255c0e99980fad34bdbbf7667e8e3bab070897f09e901682560dbf8ef12e821d17bb3f740cc18fc05"
+    }
+   }
+  },
+  "11": {
+   "hash": "209e3e3b092dfe05aba480010ed23a05c3f8c8487e6789d35f6b79859214171e",
+   "payload": {
+    "type": 11,
+    "address": "trac1ehrgt2855qdx2zsfhmckm624gmrdx6e8jlexxc5fsmc6eyw5hdpshd65c5",
+    "bdo": {
+     "tx": "209e3e3b092dfe05aba480010ed23a05c3f8c8487e6789d35f6b79859214171e",
+     "txv": "54f57c8d3c4fb3e653201aa9a040e3f673e80c939a95f0a477b18fe51dbfd186",
+     "bs": "cc5eab33b84da959c95d62aac0e0560c5ba74d5a86b21da2dd7f0e0c9b927354",
+     "ic": "747261632d706565722d7375626e6574747261632d706565722d7375626e6574",
+     "in": "88b5503165e64c5fd36f639e167f85ad49c6b428b90ad3ba653178337d86aa83",
+     "is": "952db6050d5209796301bca15b8000d3858b101abdcf6916dd5fdbc165c9384894aca3a8ee61a3650e7388f3a83e4f06b12bb91054a34a1a1235737b69509e08",
+     "va": "trac12sw3sz7vc88mxryznncdu2w6alvgz9q9hc3c32zd6c52x6x3w5dsghs83v",
+     "vn": "e54a5da27b1862888fb1583a973ca5bddefbda4782fd093ee688168ae3d86a73",
+     "vs": "8d47299b34cbc5a9cde840c7c1032578a2376c71045066d1c83681f457d09f36edd1843406b0ea7c4f578ec623c9f455798cc30e30f8a03676adbeaca33adb0e"
+    }
+   }
+  },
+  "12": {
+   "hash": "442b57c0c1d7f04b4a02b241b657984804568c92a4f60ceed89bd1cfcbe76b93",
+   "payload": {
+    "type": 12,
+    "address": "trac1yy6zenag8lmph7r400y6g4ge054qqxvmypnknvhvu8f3kyv8vxesgaxevp",
+    "txo": {
+     "tx": "442b57c0c1d7f04b4a02b241b657984804568c92a4f60ceed89bd1cfcbe76b93",
+     "txv": "54f57c8d3c4fb3e653201aa9a040e3f673e80c939a95f0a477b18fe51dbfd186",
+     "iw": "a36996e4881efa25031f0ad049936b27738ee82b19ce1a80cd73e2136da66cc2",
+     "ch": "6bcb0bf40d9d0c79498fde5230c5bfaf3255c025d1caca0e7bb705fc5be0f0bf",
+     "bs": "a36996e4881efa25031f0ad049936b27738ee82b19ce1a80cd73e2136da66cc2",
+     "mbs": "acbc3a4344d3a804101d40e53db1dda82b767646425af73599d4cd6577d69685",
+     "in": "05b500d514602e42c2e747fda5d94e8b6d4e1b94f4d2c21fead97517bf0b8bc9",
+     "is": "968157f9bf17ce68db750962097ce6adc8605d5b00255817a84973ee3bf8691367ce585853027a0f0d07540cbf6ddfbdc75ba67302996ab623cc9c45bc45f901",
+     "va": "trac1a2t9tragkc20fylkggtn8k2ythy8er0tkn6s4ng905p7zpweg57s67wcdn",
+     "vn": "a26618f7eda8d38feaa341a9ee3e411b225c319fa9a10d9c129ec08bcb9df1f6",
+     "vs": "7ab45153153aac2def0881f926deff7823e70ce2c65d1beab3c89a595200f44385efaa498e8ab67529df5345472b28fe11f75fa515262f4a3be885ed3b947d03"
+    }
+   }
+  },
+  "13": {
+   "hash": "475355b936de2fbcf8eaa6ddb524a4df90aa8feba2fa307181299dca46691ee8",
+   "payload": {
+    "type": 13,
+    "address": "trac1mvu5ar22mej7el995tugyynxfthdwh95puklq00rrjrhj9hxq2asz4dx93",
+    "tro": {
+     "tx": "475355b936de2fbcf8eaa6ddb524a4df90aa8feba2fa307181299dca46691ee8",
+     "txv": "d4fe29ffd563cba4c1726f4f4c8e00f367209b7a3f4e6c20c3108041efe69e4c",
+     "to": "trac1axx23vjcscfth30d0t597eylkqedda85xyl3sh4zgjlga2fnzk7qqfmnfj",
+     "am": "1000000000000000000",
+     "in": "6c89cde12d96aed63ef48ef6e7d52e585b04468cd9ae86462340b91bc4b24133",
+     "is": "ae719e8477b249008514b9617528f964fab3af7452874d8be4a3d645c65df34d2ff8a8bdadf67f8a3cfd6d6140ffedeeb2e3a42ab6f6ef21fcdd7831e563510d",
+     "va": "trac1hyg3mv57fph35qev4xsa74n7rey2lkg9puq9yzq6aq84r023ldcqyk889z",
+     "vn": "4c1b707e6c2e02d1001d77c1757415007495e9da0bbc85b66fc690bc3de654d7",
+     "vs": "d04bf2556c3f5ab64c8b2d9747a4f5e049ac839807599b67ba8cacea2fd3f41f45d2706606c13157a4a3f86a9e4df24d72e26e43cc5bc705788fcd86d72aa705"
+    }
+   }
+  }
+ },
+ "account": {
+  "address": "trac1376drmts39jksahm3plf634tpt8nkpg8ejatqanfdyvflzl0qcwqxx32ps",
+  "writingKey": "0000000000000000000000000000000000000000000000000000000000000000",
+  "isWhitelisted": false,
+  "isValidator": false,
+  "isIndexer": false,
+  "license": null,
+  "balance": "3870000000000000000",
+  "stakedBalance": "0"
+ }
+}

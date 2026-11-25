@@ -4,7 +4,7 @@
 // subtracted, and the coin page shows each one.
 import { getJSON } from '../../src/util.mjs';
 import { erc20TotalSupply, erc20Balance, splBalance, trc20Balance, sol, substrateValue, evm, EXPLORER } from '../chains.mjs';
-import { resetSupply } from './trac.mjs';
+import { resetSupply, tnkSupply } from './trac.mjs';
 import { extraSupply } from './extra.mjs';
 
 const BURN = '0x000000000000000000000000000000000000dEaD';
@@ -377,6 +377,10 @@ const METHODS = {
   },
   async reset() {
     return resetSupply();
+  },
+  // TNK (Trac Network): sum of every Main Settlement Bus account, see tnkSupply in trac.mjs.
+  async tnk(r = {}) {
+    return tnkSupply(r);
   },
   // Celestia (TIA): total is a chain read (bank supply of utia). Circulating is NOT read from the chain:
   // the genesis lockups (ecosystem 267,944,711 / investors 355,689,414 / core contributors 176,365,875 TIA,
