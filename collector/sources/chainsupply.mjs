@@ -35,6 +35,17 @@ const WLD_OP = '0xdC6fF44d5d932Cbd77B52E5612Ba0529DC6226F1';
 const OP_L1_BRIDGE = '0x99C9fc46f92E8a1c0deC1b1747d010903E884bE1';
 const OP_L2_BRIDGE = '0x4200000000000000000000000000000000000010';
 const WORLDCHAIN_L1_BRIDGE = '0x470458C91978D2d929704489Ad730DC3E3001113';
+// World's own list of WLD contracts and wallets (World whitepaper, Tokenomics, 2025-08-04 edition), Ethereum side.
+const WLD_WHITEPAPER = 'https://whitepaper.world.org/designing-for-scale/2025-08-04';
+const WLD_WORLD_WALLETS = [
+  ['0x1770bd8186AAd27Df9B050D65f86CF2cdC92C296', 'World Community unlock contract 1 (locked, unlocks on schedule)'],
+  ['0xaEE0360b73B5D01dad134f234d3a93adc1680e57', 'World Community unlock contract 2 (locked, unlocks on schedule)'],
+  ['0x938ceD2D1eE4AFB220929F96c2eB754C053C77F7', 'World Community unlock contract 3 (locked, unlocks on schedule)'],
+  ['0x5B5442C5fcEaE3b40C230C32a3Ffe924BcBe7D93', 'World Community unlock contract 4 (locked, unlocks on schedule)'],
+  ['0xc534a745bFfaF9466Ed7B47fA23B0177b99A3e77', 'World Foundation cold wallet'],
+  ['0x59a0f98345f54bAB245A043488ECE7FCecD7B596', 'World Assets, Ltd. cold wallet'],
+  ['0xc4151Dd19A38E7224793F5aD8fBDD912750e3565', 'World Assets, Ltd. hot wallet'],
+];
 
 // TAP (TAP Protocol on Bitcoin, by Trac). Trac's public TAP Protocol reader: the REST reader Trac's own Digital Matter
 // World kit reads on mainnet. Trac's older socket endpoint, tap.trac.network, now answers 502. A second reader (any
@@ -395,12 +406,12 @@ const METHODS = {
   // Worldcoin (WLD). Total is read from Ethereum: totalSupply of the WLD ERC-20 minus the dead-address balance.
   // Optimism is read too, as a check: its WLD must name the Ethereum WLD as remoteToken, use OP's standard bridge,
   // and not exceed the WLD locked in OP Mainnet's L1StandardBridge, so nothing is counted twice.
-  // Circulating is withheld: most WLD is still locked in daily unlock schedules (World: 4.9B of 10B unlocked in
-  // April 2026), and the team and investor unlocks are not attributed here to published addresses, so a circulating
-  // figure built from chain balances could overstate. The rule can set circulating once those locks are sourced.
+  // The wallets World publishes (whitepaper, Tokenomics) are read and listed. Circulating is still withheld: World's
+  // team and investor tokens unlock linearly and have no published addresses, so total minus the listed wallets
+  // would overstate circulating. The rule can set circulating once those locks are sourced.
   async worldcoin(r = {}) {
     const addr = h => '0x' + String(h).slice(-40).toLowerCase();
-    const [total, dead, opTotal, opRemote, opBridge, lockedOp, lockedWorld] = await Promise.all([
+    const [total, dead, opTotal, opRemote, opBridge, lockedOp, lockedWorld, ...held] = await Promise.all([
       erc20TotalSupply('eth', WLD_ETH),
       erc20Balance('eth', WLD_ETH, BURN),
       erc20TotalSupply('optimism', WLD_OP),
@@ -408,8 +419,9 @@ const METHODS = {
       evm('optimism', 'eth_call', [{ to: WLD_OP, data: '0xe78cea92' }, 'latest']), // bridge()
       erc20Balance('eth', WLD_ETH, OP_L1_BRIDGE),
       erc20Balance('eth', WLD_ETH, WORLDCHAIN_L1_BRIDGE),
+      ...WLD_WORLD_WALLETS.map(([h]) => erc20Balance('eth', WLD_ETH, h)),
     ]);
-    if (![total, dead, opTotal, lockedOp, lockedWorld].every(Number.isFinite) || !(total > 0)) throw new Error('worldcoin: bad chain read');
+    if (![total, dead, opTotal, lockedOp, lockedWorld, ...held].every(Number.isFinite) || !(total > 0)) throw new Error('worldcoin: bad chain read');
     if (addr(opRemote) !== WLD_ETH.toLowerCase() || addr(opBridge) !== OP_L2_BRIDGE.toLowerCase()) throw new Error(`worldcoin: Optimism WLD is not the standard-bridged Ethereum WLD (${opRemote}, ${opBridge})`);
     if (opTotal > lockedOp * 1.0001) throw new Error(`worldcoin: Optimism WLD ${opTotal} above the ${lockedOp} locked in the OP bridge`);
     const net = total - dead;
@@ -419,8 +431,11 @@ const METHODS = {
       circulating: r.circulating === true ? net : null,
       total: net,
       src: `${EXPLORER.eth}/token/${WLD_ETH}`,
-      excluded: dead > 0 ? [{ reason: 'Burn address', holder: BURN, amount: dead, src: eth(BURN) }] : [],
-      note: `Total read from Ethereum, where the whole supply is minted: ${fmt(total)} WLD, less ${dead.toFixed(2)} at the burn address. The ${fmt(opTotal)} WLD on Optimism (${EXPLORER.optimism}/token/${WLD_OP}) are bridged copies (remoteToken = Ethereum WLD, OP standard bridge) backed by ${fmt(lockedOp)} WLD locked in OP Mainnet's L1StandardBridge on Ethereum, so they are inside the Ethereum figure; World Chain's ${fmt(lockedWorld)} bridged WLD are locked the same way. Circulating is withheld: team and investor tokens still unlock daily and their locks are not attributed to published addresses here, so a balance-based figure could overstate it.`,
+      excluded: [
+        ...(dead > 0 ? [{ reason: 'Burn address', holder: BURN, amount: dead, src: eth(BURN) }] : []),
+        ...WLD_WORLD_WALLETS.map(([h, reason], i) => ({ reason: `${reason}, per World's whitepaper`, holder: h, amount: held[i], src: WLD_WHITEPAPER })).filter(e => e.amount > 0),
+      ],
+      note: `Total read from Ethereum, where the whole supply is minted: ${fmt(total)} WLD, less ${dead.toFixed(2)} at the burn address. The ${fmt(opTotal)} WLD on Optimism (${EXPLORER.optimism}/token/${WLD_OP}) are bridged copies (remoteToken = Ethereum WLD, OP standard bridge) backed by ${fmt(lockedOp)} WLD locked in OP Mainnet's L1StandardBridge on Ethereum, so they are inside the Ethereum figure; World Chain's ${fmt(lockedWorld)} bridged WLD are locked the same way. The listed World wallets hold ${fmt(held.reduce((a, b) => a + b, 0))} WLD on Ethereum (World also lists wallets on Optimism and World Chain). Circulating is withheld: World defines circulating as tokens without transfer restrictions and its unlocked supply only as an upper bound (${WLD_WHITEPAPER}), and the team and investor tokens still unlocking have no published addresses, so total minus the listed wallets would overstate it.`,
     };
   },
   // Celestia (TIA): total is a chain read (bank supply of utia). Circulating is NOT read from the chain:

@@ -1308,6 +1308,8 @@ const WLD_RPC = {
     dead: '0x00000000000000000000000000000000000000000000000005c8ed583541926f', // 0.417
     '99c9fc46f92e8a1c0dec1b1747d010903e884be1': '0x000000000000000000000000000000000000000001a3a4538426c643cd02be2f', // OP L1 bridge 507,315,927
     '470458c91978d2d929704489ad730dc3e3001113': '0x000000000000000000000000000000000000000002a5344500bca24488ce8bb0', // World Chain L1 bridge
+    aee0360b73b5d01dad134f234d3a93adc1680e57: '0x' + (1750000001n * 10n ** 18n).toString(16).padStart(64, '0'), // unlock contract 2
+    '59a0f98345f54bab245a043488ece7fcecd7b596': '0x' + (1183211975n * 10n ** 18n).toString(16).padStart(64, '0'), // World Assets cold
   },
   optimism: {
     '0x18160ddd': '0x000000000000000000000000000000000000000001a1dda1420fbdb34263a590', // 505,168,684
@@ -1323,7 +1325,7 @@ function fakeWld(over = {}) {
     const req = JSON.parse(opts.body);
     assert.equal(req.method, 'eth_call');
     const data = req.params[0].data.toLowerCase();
-    let result = data.startsWith('0x70a08231') ? rpc[chain][data.slice(-40) === '000000000000000000000000000000000000dead' ? 'dead' : data.slice(-40)] : rpc[chain][data];
+    let result = data.startsWith('0x70a08231') ? rpc[chain][data.slice(-40) === '000000000000000000000000000000000000dead' ? 'dead' : data.slice(-40)] ?? '0x' + '0'.repeat(64) : rpc[chain][data];
     if (result === undefined) throw new Error(`unexpected ${chain} call ${data}`);
     if (result instanceof Error) return { ok: false, status: 503, json: async () => ({}) };
     return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) };
@@ -1338,7 +1340,9 @@ test('WLD: total from Ethereum, Optimism checked against the OP bridge, circulat
   assert.ok(Math.abs(s.total - (1e10 - 0.41738)) < 0.01);
   assert.equal(s.circulating, null);
   assert.match(s.note, /less 0\.42 at the burn address\. The 505,168,684 WLD on Optimism/);
-  assert.equal(s.excluded[0].holder, '0x000000000000000000000000000000000000dEaD');
+  assert.deepEqual(s.excluded.map(e => e.holder), ['0x000000000000000000000000000000000000dEaD', '0xaEE0360b73B5D01dad134f234d3a93adc1680e57', '0x59a0f98345f54bAB245A043488ECE7FCecD7B596'], 'zero-balance World wallets are not listed');
+  assert.equal(s.excluded[1].src, 'https://whitepaper.world.org/designing-for-scale/2025-08-04');
+  assert.match(s.note, /The listed World wallets hold 2,933,211,976 WLD on Ethereum/);
   assert.match(s.note, /backed by 507,315,927 WLD locked in OP Mainnet's L1StandardBridge/);
   assert.match(s.note, /Circulating is withheld/);
 });
