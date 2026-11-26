@@ -4,6 +4,9 @@
 // Only one claim of ours at a time (repo rule). No packages needed, Node 20+.
 // v2: pushes when the title or text of any open bounty task changes (also taken ones), and does not auto-claim a
 // task that replaces an older one ("replaces #9") while claims or pull requests on the old one still count.
+// v3: our claim is taken from GitHub (a claim posted by hand is adopted, a "releasing" comment frees it); when a branch
+// bounty-<N>-... for our claimed task appears in our fork, the pull request is opened from it (title and text from the
+// commit message); new comments, reviews, merges and closes on our pull requests are pushed.
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -23,6 +26,12 @@ const SKIP_LABELS = /paused|done|closed|wontfix|invalid|duplicate/i;
 const CLAIM_RE = /^\s*claim\s+trac1[0-9a-z]{20,}/i;
 const REPLACES_RE = /\b(?:replaces|supersedes|moved from|ersetzt)\s+(?:issue\s+)?#(\d+)/i;
 const OLD_CHECK_MS = 30 * 60e3;
+const RELEASE_RE = /\b(?:releas\w*|withdraw\w*|unclaim\w*)\b/i;
+const FORK_NAME = process.env.TMC_FORK_NAME || 'tradermarketcap-open';
+const PR_CHECK_MS = 2 * 60e3;      // how often to look for our branch while our claim has no PR
+const PR_SETTLE_MS = 10 * 60e3;    // the branch's last commit must be this old before the PR is opened
+const PR_RETRY_MS = 30 * 60e3;     // after a failed PR attempt
+const PR_COMMENTS_MS = 10 * 60e3;  // how often comments and reviews on our PRs are read
 
 const STATE = path.join(DIR, 'state.json');
 const LOG = path.join(DIR, 'watch.log');
@@ -68,6 +77,25 @@ export function makeCtx({ fetchImpl = fetch, token, now = () => Date.now() } = {
   return { gh, notify, now };
 }
 
+// Live claims in a comment list: a login's latest claim counts unless the same login later posted a release.
+function activeClaims(comments) {
+  const by = new Map();
+  for (const x of comments) {
+    const login = x.user?.login, at = Date.parse(x.created_at), body = x.body || '';
+    const e = by.get(login) || {};
+    if (CLAIM_RE.test(body)) e.claim = Math.max(e.claim || 0, at);
+    else if (RELEASE_RE.test(body)) e.release = Math.max(e.release || 0, at);
+    by.set(login, e);
+  }
+  return [...by].filter(([, e]) => e.claim && !(e.release > e.claim)).map(([login, e]) => ({ login, at: e.claim }));
+}
+
+// Logins whose latest claim on a task was released by themselves (we never re-claim a task we gave up).
+function releasedBy(comments) {
+  const live = new Set(activeClaims(comments).map(x => x.login));
+  return [...new Set(comments.filter(x => RELEASE_RE.test(x.body || '') && !CLAIM_RE.test(x.body || '')).map(x => x.user?.login))].filter(l => !live.has(l));
+}
+
 const refsIn = text => new Set([...String(text || '').matchAll(/#(\d+)\b/g)].map(m => Number(m[1])));
 const bountyOf = body => (String(body || '').match(/Bounty:\s*([\d.]+)\s*RESET/i) || [])[1] || '?';
 const issueUrl = n => `https://github.com/${REPO}/issues/${n}`;
@@ -88,6 +116,92 @@ async function pages(ctx, p, max = 5) {
     if (batch.length < 100) break;
   }
   return out;
+}
+
+// Our claim has no PR yet: if our fork has a branch bounty-<N>-..., open the PR from it (title and text from the commit).
+async function openPrFromBranch(ctx, state, k) {
+  const t = ctx.now();
+  state.pr ??= {};
+  const rec = state.pr[k.number] ??= {};
+  if (rec.done || (rec.nextTry && t < rec.nextTry)) return;
+  rec.nextTry = t + PR_CHECK_MS;
+  const fork = `${state.me}/${FORK_NAME}`;
+  let branches;
+  try { branches = await pages(ctx, `/repos/${fork}/branches`, 3); } catch (e) { log(`Fork ${fork} nicht lesbar: ${e.message}`); return; }
+  const b = branches.find(x => new RegExp(`^bounty-${k.number}(?:-|$)`).test(x.name));
+  if (!b) return;
+  const head = `${state.me}:${b.name}`;
+  const existing = await ctx.gh(`/repos/${REPO}/pulls?state=all&head=${encodeURIComponent(head)}`);
+  if (existing.length) { rec.done = true; rec.pr = existing[0].number; log(`Branch ${b.name} hatte schon PR #${existing[0].number}.`); return; }
+  const commit = await ctx.gh(`/repos/${fork}/commits/${encodeURIComponent(b.name)}`);
+  const when = Date.parse(commit?.commit?.committer?.date || '');
+  if (!(t - when >= PR_SETTLE_MS)) return; // give the last push a few minutes
+  const [subject, ...rest] = String(commit.commit.message || '').split('\n');
+  const title = /\[bounty #\d+\]/.test(subject) ? subject.trim() : `[bounty #${k.number}] ${subject.trim()}`;
+  let body = rest.join('\n').trim();
+  if (!new RegExp(`#${k.number}\\b`).test(body)) body = `Closes #${k.number}. Claimed on #${k.number} by @${state.me}.\n\n${body}`;
+  try {
+    const pr = await ctx.gh(`/repos/${REPO}/pulls`, { method: 'POST', body: { title, head, base: 'main', body, maintainer_can_modify: true } });
+    rec.done = true; rec.pr = pr.number;
+    log(`PR #${pr.number} für #${k.number} geöffnet (${b.name}).`);
+    await ctx.notify(state, `PR #${pr.number} für #${k.number} geöffnet`, `${title}\nAus Branch ${b.name}. Jetzt prüfen die Maintainer.`, { priority: 4, click: pr.html_url, tags: ['white_check_mark'] });
+  } catch (e) {
+    rec.nextTry = t + PR_RETRY_MS;
+    log(`PR für #${k.number} fehlgeschlagen: ${e.message}`);
+    if (rec.error !== e.message) {
+      rec.error = e.message;
+      await ctx.notify(state, `PR für #${k.number} klappt nicht`, `${e.message}\nNächster Versuch in 30 Minuten.`, { priority: 4, click: issueUrl(k.number) });
+    }
+  }
+}
+
+// Our open PRs: push new comments and reviews by others, and merges or closes.
+async function watchOurPrs(ctx, state, pulls) {
+  state.myPrs ??= {};
+  const t = ctx.now();
+  const mine = pulls.filter(p => p.user?.login === state.me && Number.isInteger(p.number));
+  for (const p of mine) state.myPrs[p.number] ??= { title: p.title, url: p.html_url, seen: null };
+  for (const num of Object.keys(state.myPrs)) {
+    if (mine.some(p => p.number === Number(num))) continue;
+    const rec = state.myPrs[num];
+    delete state.myPrs[num];
+    try {
+      const pr = await ctx.gh(`/repos/${REPO}/pulls/${num}`);
+      // This project usually commits the change itself and closes the PR with a "Merged as <sha>" comment.
+      const notes = await pages(ctx, `/repos/${REPO}/issues/${num}/comments`, 2);
+      const mergedNote = notes.filter(x => x.user?.login !== state.me).map(x => x.body || '').reverse().find(b => /merged as/i.test(b));
+      const merged = !!pr.merged_at || !!mergedNote;
+      log(`PR #${num} ${merged ? 'übernommen' : 'geschlossen'}.`);
+      await ctx.notify(state, merged ? `PR #${num} übernommen` : `PR #${num} ohne Merge geschlossen`,
+        `${rec.title}\n${merged ? (mergedNote ? mergedNote.trim().replace(/\s+/g, ' ').slice(0, 300) : 'Die Bounty kommt mit der nächsten Auszahlung.') : 'Kommentare der Maintainer prüfen.'}`,
+        { priority: merged ? 3 : 4, click: rec.url, tags: [merged ? 'tada' : 'warning'] });
+    } catch (e) { log(`PR #${num}: ${e.message}`); }
+  }
+  // A PR seen for the first time is read at once (to note what is already there); others every few minutes.
+  const due = !state.prCommentsAt || t - state.prCommentsAt >= PR_COMMENTS_MS;
+  if (due) state.prCommentsAt = t;
+  for (const p of mine) {
+    const rec = state.myPrs[p.number];
+    if (!due && rec.seen !== null) continue;
+    const [comments, reviews] = await Promise.all([
+      pages(ctx, `/repos/${REPO}/issues/${p.number}/comments`, 2),
+      pages(ctx, `/repos/${REPO}/pulls/${p.number}/reviews`, 2),
+    ]);
+    const items = [
+      ...comments.map(x => ({ id: `c${x.id}`, who: x.user?.login, text: x.body || '' })),
+      ...reviews.map(x => ({ id: `r${x.id}`, who: x.user?.login, text: `${x.state === 'CHANGES_REQUESTED' ? 'Änderungen verlangt. ' : x.state === 'APPROVED' ? 'Freigegeben. ' : ''}${x.body || ''}` })),
+    ].filter(x => x.who !== state.me);
+    const first = rec.seen === null;
+    rec.seen ??= [];
+    for (const x of items) {
+      if (rec.seen.includes(x.id)) continue;
+      rec.seen.push(x.id);
+      if (first) continue; // existing comments at the first look are not news
+      const text = x.text.trim().replace(/\s+/g, ' ');
+      log(`Kommentar von ${x.who} auf PR #${p.number}.`);
+      await ctx.notify(state, `Kommentar auf PR #${p.number} (${x.who})`, text.length > 400 ? text.slice(0, 397) + '...' : text || '(ohne Text)', { priority: 4, click: p.html_url, tags: ['speech_balloon'] });
+    }
+  }
 }
 
 // One round. Returns a short summary for the log.
@@ -112,17 +226,46 @@ export async function tick(ctx, state) {
   const firstRun = !state.started;
   const open = new Set(issues.map(i => i.number));
 
-  // Our claim: reminders and cleanup
+  // Comments: refresh claims of every task whose comment count changed.
+  for (const i of issues) {
+    const c = state.issues[i.number] ??= { claims: [], comments: -1 };
+    if (c.comments !== i.comments) {
+      const comments = i.comments ? await pages(ctx, `/repos/${REPO}/issues/${i.number}/comments`, 3) : [];
+      c.claims = activeClaims(comments);
+      c.releasedBy = releasedBy(comments);
+      c.comments = i.comments;
+    }
+  }
+
+  // Our claim: closed, released by hand, or posted by hand.
+  if (state.claimed && !open.has(state.claimed.number)) {
+    const k = state.claimed;
+    log(`Unsere Aufgabe #${k.number} ist geschlossen.`);
+    await ctx.notify(state, `#${k.number} geschlossen`, `${k.title}\nEin Claim ist wieder frei.`, { priority: 3, click: issueUrl(k.number) });
+    state.claimed = null;
+  }
+  const mineOpen = issues
+    .map(i => ({ i, at: (state.issues[i.number].claims.find(x => x.login === state.me) || {}).at }))
+    .filter(x => x.at)
+    .sort((a, b) => b.at - a.at);
+  if (state.claimed && !mineOpen.some(x => x.i.number === state.claimed.number)) {
+    log(`Claim #${state.claimed.number} wurde freigegeben.`);
+    state.claimed = null;
+  }
+  if (!state.claimed && mineOpen.length) {
+    const { i, at } = mineOpen[0];
+    state.claimed = { number: i.number, title: i.title, bounty: bountyOf(i.body), at };
+    log(`Claim #${i.number} auf GitHub gefunden und übernommen.`);
+  }
+
+  // Reminders, expiry, and the pull request from our branch.
   if (state.claimed) {
     const k = state.claimed, t = ctx.now(), age = t - k.at;
     const ourPr = (prFor.get(k.number) || []).includes(state.me);
-    if (!open.has(k.number)) {
-      log(`Unsere Aufgabe #${k.number} ist geschlossen.`);
-      await ctx.notify(state, `#${k.number} geschlossen`, `${k.title}\nEin Claim ist wieder frei.`, { priority: 3, click: issueUrl(k.number) });
-      state.claimed = null;
-    } else if (ourPr) {
+    if (ourPr) {
       if (!state.reminded[`${k.number}:pr`]) { log(`PR für #${k.number} gefunden – Frist erfüllt.`); state.reminded[`${k.number}:pr`] = true; }
     } else {
+      await openPrFromBranch(ctx, state, k);
       for (const h of [24, 40, 46]) {
         const key = `${k.number}:${h}`;
         if (age >= h * 3600e3 && !state.reminded[key]) {
@@ -134,15 +277,12 @@ export async function tick(ctx, state) {
     }
   }
 
+  await watchOurPrs(ctx, state, pulls);
+
   let free = 0;
 
   for (const i of issues) {
-    const c = state.issues[i.number] ??= { claims: [], comments: -1 };
-    if (c.comments !== i.comments) {
-      const comments = i.comments ? await pages(ctx, `/repos/${REPO}/issues/${i.number}/comments`, 3) : [];
-      c.claims = comments.filter(x => CLAIM_RE.test(x.body || '')).map(x => ({ login: x.user?.login, at: Date.parse(x.created_at) }));
-      c.comments = i.comments;
-    }
+    const c = state.issues[i.number];
     const t = ctx.now();
     const prs = prFor.get(i.number) || [];
     // A claim by someone else counts for 48 h; after that it has expired (any PR of theirs is caught by prs above).
@@ -155,7 +295,7 @@ export async function tick(ctx, state) {
     if (replaced && !mine) {
       if (!c.old || c.old.number !== replaced || t - c.old.at > OLD_CHECK_MS) {
         const oc = await pages(ctx, `/repos/${REPO}/issues/${replaced}/comments`, 3);
-        c.old = { number: replaced, at: t, claims: oc.filter(x => CLAIM_RE.test(x.body || '')).map(x => ({ login: x.user?.login, at: Date.parse(x.created_at) })) };
+        c.old = { number: replaced, at: t, claims: activeClaims(oc) };
       }
       const oldPrs = (prFor.get(replaced) || []).filter(l => l !== state.me);
       const oldClaims = c.old.claims.filter(x => x.login !== state.me && t - x.at < CLAIM_MS);
@@ -189,7 +329,8 @@ export async function tick(ctx, state) {
     c.sig = sig; c.title = i.title; c.body = String(i.body || '');
 
     const busy = !!state.claimed;
-    if (isFree && AUTOCLAIM && !busy && (c.newSinceStart || CLAIM_EXISTING)) {
+    const gaveUp = (c.releasedBy || []).includes(state.me);
+    if (isFree && AUTOCLAIM && !busy && !gaveUp && (c.newSinceStart || CLAIM_EXISTING)) {
       {
         await ctx.gh(`/repos/${REPO}/issues/${i.number}/comments`, { method: 'POST', body: { body: `claim ${TRAC}` } });
         state.claimed = { number: i.number, title: i.title, bounty, at: t };
@@ -197,10 +338,10 @@ export async function tick(ctx, state) {
         c.comments += 1;
         log(`GECLAIMT #${i.number} (${bounty} RESET): ${i.title}`);
         await ctx.notify(state, `GECLAIMT #${i.number} (${bounty} RESET)`,
-          `${i.title}\nPR bis ${fmt(t + CLAIM_MS)} öffnen. Schick Claude den Link.`, { priority: 5, click: issueUrl(i.number), tags: ['rotating_light'] });
+          `${i.title}\nClaude baut die Lösung im stündlichen Lauf, der PR öffnet sich dann von selbst. Frist: ${fmt(t + CLAIM_MS)}.`, { priority: 5, click: issueUrl(i.number), tags: ['rotating_light'] });
       }
       c.freeNotified = true;
-    } else if (isFree && !c.freeNotified) {
+    } else if (isFree && !c.freeNotified && !gaveUp) {
       log(`FREI #${i.number}: ${i.title}${busy ? ` (nicht geclaimt, #${state.claimed.number} läuft noch)` : ''}`);
       await ctx.notify(state, `FREI: Bounty #${i.number} (${bounty} RESET)`,
         `${i.title}${busy ? `\nDu hältst noch #${state.claimed.number}.` : '\nBitte kurz prüfen, dann claimen.'}`, { priority: 4, click: issueUrl(i.number) });

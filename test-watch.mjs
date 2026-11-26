@@ -35,8 +35,26 @@ async function fakeFetch(url, opts = {}) {
   const json = (b, status = 200) => new Response(JSON.stringify(b), { status });
   if (u.host === 'ntfy.sh') { pushes.push(JSON.parse(opts.body)); return json({}); }
   if (u.pathname === '/user') return json({ login: 'weissio' });
-  if (u.pathname.endsWith('/pulls')) return json(world.pulls);
-  const m = u.pathname.match(/\/issues\/(\d+)\/comments$/);
+  if (u.pathname === '/repos/weissio/tradermarketcap-open/branches') return json(world.branches || []);
+  let m = u.pathname.match(/^\/repos\/weissio\/tradermarketcap-open\/commits\/(.+)$/);
+  if (m) return world.commits?.[decodeURIComponent(m[1])] ? json(world.commits[decodeURIComponent(m[1])]) : json({ message: 'nf' }, 404);
+  if (u.pathname.endsWith('/pulls') && opts.method === 'POST') {
+    const b = JSON.parse(opts.body);
+    const number = 500 + (world.created = (world.created || 0) + 1) - 1;
+    const pr = { number, title: b.title, body: b.body, head: b.head, base: b.base, user: { login: 'weissio' }, html_url: `https://github.com/x/pull/${number}` };
+    (world.createdPulls ??= []).push(pr); world.pulls.push(pr);
+    return json(pr, 201);
+  }
+  if (u.pathname.endsWith('/pulls')) {
+    const head = u.searchParams.get('head');
+    if (head) return json([...(world.createdPulls || []), ...(world.closedPulls || [])].filter(p => p.head === head));
+    return json(world.pulls);
+  }
+  m = u.pathname.match(/\/pulls\/(\d+)\/reviews$/);
+  if (m) return json(world.reviews?.[m[1]] || []);
+  m = u.pathname.match(/\/pulls\/(\d+)$/);
+  if (m) return json(world.prDetails?.[m[1]] || { merged_at: null });
+  m = u.pathname.match(/\/issues\/(\d+)\/comments$/);
   if (m && opts.method === 'POST') {
     const n = Number(m[1]); const b = JSON.parse(opts.body);
     posted.push({ n, body: b.body });
@@ -157,6 +175,87 @@ assert.ok(!pushes.some(p => /FREI: Bounty #98/.test(p.title)));
 world.issues.push({ number: 99, title: 'Read BAR supply', comments: 0, body: 'Bounty: 1.5 RESET\nThis task replaces #13.', labels: [{ name: 'bounty' }] });
 await tick(ctx, s2);
 assert.deepEqual(posted.map(p => p.n), [99], 'Ersatz für unbearbeitete Aufgabe wird normal geclaimt');
+
+// ---------- v3: claims from GitHub, PR from our branch, comments on our PRs ----------
+world.issues = [{ number: 200, title: 'Supply rule for FOO', comments: 0, body: 'Bounty: 2 RESET', labels: [{ name: 'bounty' }] }];
+world.comments = {}; world.pulls = []; world.branches = []; world.commits = {};
+posted.length = 0; pushes.length = 0;
+const s3 = { topic: 'tmc-test3' };
+await tick(ctx, s3);
+
+// 11) A claim posted by hand is adopted as ours.
+world.comments[200] = [{ user: { login: 'weissio' }, body: 'claim trac1376drmts39jksahm3plf634tpt8nkpg8ejatqanfdyvflzl0qcwqxx32ps', created_at: iso(NOW) }];
+world.issues[0].comments = 1;
+await tick(ctx, s3);
+assert.equal(s3.claimed?.number, 200, 'Hand-Claim übernommen');
+assert.equal(posted.length, 0);
+
+// 12) Our branch appears: the PR waits until the last commit is 10 minutes old, then opens once, as us.
+world.branches = [{ name: 'main' }, { name: 'bounty-20-old' }, { name: 'bounty-200-foo' }];
+world.commits['bounty-200-foo'] = { commit: { message: 'FOO: total from the chain (bounty #200)\n\nCloses #200. Claimed on #200 by @weissio.\n\n## What changed\n- rule', committer: { date: iso(NOW - 60e3) } } };
+NOW += 3 * 60e3;
+await tick(ctx, s3);
+assert.equal((world.createdPulls || []).length, 0, 'wartet, bis der Push 10 Minuten alt ist');
+NOW += 10 * 60e3;
+await tick(ctx, s3);
+assert.equal(world.createdPulls.length, 1, 'PR geöffnet');
+let pr = world.createdPulls[0];
+assert.equal(pr.head, 'weissio:bounty-200-foo');
+assert.equal(pr.base, 'main');
+assert.equal(pr.title, '[bounty #200] FOO: total from the chain (bounty #200)');
+assert.match(pr.body, /^Closes #200\. Claimed on #200 by @weissio\./);
+assert.ok(pushes.some(p => /PR #500 für #200 geöffnet/.test(p.title)));
+NOW += 5 * 60e3;
+await tick(ctx, s3);
+assert.equal(world.createdPulls.length, 1, 'nur einmal');
+
+// 13) A branch whose PR already exists (any state) is not reused; the commit body gets "Closes #N" if it lacks it.
+world.issues.push({ number: 201, title: 'Supply rule for BAR', comments: 0, body: 'Bounty: 2 RESET', labels: [{ name: 'bounty' }] });
+await tick(ctx, s3);
+assert.equal(posted.length, 0, 'kein zweiter Claim, solange #200 läuft');
+
+// 14) Comments and reviews by maintainers on our PR are pushed; ours are not; old ones at the first look are not.
+world.comments[500] = [{ id: 1, user: { login: 'Slipway-exchange' }, body: 'Please also read the treasury wallet.', created_at: iso(NOW) }];
+world.reviews = { 500: [{ id: 7, user: { login: 'weissio' }, state: 'COMMENTED', body: 'self' }] };
+NOW += 11 * 60e3;
+await tick(ctx, s3);
+assert.ok(pushes.some(p => /Kommentar auf PR #500 \(Slipway-exchange\)/.test(p.title) && /treasury wallet/.test(p.message)));
+world.reviews[500].push({ id: 8, user: { login: 'Slipway-exchange' }, state: 'CHANGES_REQUESTED', body: 'Source for the lock?' });
+NOW += 11 * 60e3;
+await tick(ctx, s3);
+assert.ok(pushes.some(p => /Kommentar auf PR #500/.test(p.title) && /Änderungen verlangt\. Source for the lock\?/.test(p.message)));
+assert.ok(!pushes.some(p => /\(weissio\)/.test(p.title)), 'eigene Kommentare still');
+
+// 15) The maintainers commit it themselves and close the PR with "Merged as ...": pushed as taken over; the task closes.
+world.pulls = [];
+world.comments[500].push({ id: 2, user: { login: 'Slipway-exchange' }, body: 'Merged as abc1234, thank you. Bounty #200 (2 RESET) goes into the next payout.', created_at: iso(NOW) });
+world.issues = world.issues.filter(i => i.number !== 200);
+await tick(ctx, s3);
+assert.ok(pushes.some(p => /PR #500 übernommen/.test(p.title) && /Merged as abc1234/.test(p.message)));
+assert.ok(pushes.some(p => /#200 geschlossen/.test(p.title)));
+
+// 16) The slot freed, so the new free task #201 was claimed in the same round. Releasing it by hand frees the slot
+//     at once; the next new task (#202) is claimed, and the released #201 is never claimed again.
+assert.deepEqual(posted.map(p => p.n), [201]);
+assert.equal(s3.claimed?.number, 201);
+world.issues.push({ number: 202, title: 'Supply rule for BAZ', comments: 0, body: 'Bounty: 2 RESET', labels: [{ name: 'bounty' }] });
+await tick(ctx, s3);
+assert.deepEqual(posted.map(p => p.n), [201], 'kein zweiter Claim');
+world.comments[201].push({ user: { login: 'weissio' }, body: 'Releasing this claim (posted automatically by my watcher).', created_at: iso(NOW + 1000) });
+world.issues.find(i => i.number === 201).comments++;
+NOW += 60e3;
+await tick(ctx, s3);
+assert.deepEqual(posted.map(p => p.n), [201, 202], 'Platz frei: #202 geclaimt');
+NOW += 60e3;
+await tick(ctx, s3);
+world.comments[202].push({ user: { login: 'weissio' }, body: 'Releasing my claim here.', created_at: iso(NOW + 1000) });
+world.issues.find(i => i.number === 202).comments++;
+NOW += 60e3;
+await tick(ctx, s3);
+NOW += 60e3;
+await tick(ctx, s3);
+assert.deepEqual(posted.map(p => p.n), [201, 202], 'freigegebene Aufgaben werden nie erneut geclaimt');
+assert.equal(s3.claimed, null);
 
 console.log('ALLE TESTS OK');
 for (const p of pushes) console.log(` push p${p.priority}: ${p.title} | ${p.message.replace(/\n/g, ' / ')}`);
