@@ -1,0 +1,23 @@
+{
+ "captured": "2026-11-26T01:50Z",
+ "note": "Real responses: Venice stats API (api.venice.ai/api/app/vvv/vvv_stats, vvv_burn_stats) and Base RPC eth_call results for VVV 0xacfE6019Ed1A7Dc6f7B508C02d1b04ec88cC21bf (mainnet.base.org).",
+ "vvv_stats": {
+  "circulatingSupplyCryptoBaseUnit": "49537806269509987237281588",
+  "marketCap": "1496239326.091583967208862305",
+  "price": "30.204000000000000625",
+  "priceDelta24H": "22.888379744599114",
+  "totalLockedCryptoBaseUnit": "8507286488458574808251768",
+  "totalStakedCryptoBaseUnit": "32549786216980117891949874",
+  "totalSupplyCryptoBaseUnit": "81295789655018627231480788"
+ },
+ "vvv_burn_stats": {
+  "totalBurnedCryptoBaseUnit": "33975214388928018379226710",
+  "percentOfTotalSupplyBurned": "41.792096"
+ },
+ "rpc": {
+  "totalSupply": "0x0000000000000000000000000000000000000000005f5995a683ff4264a23a2a",
+  "decimals": "0x0000000000000000000000000000000000000000000000000000000000000012",
+  "balanceOfZero": "0x0000000000000000000000000000000000000000001c1a881003b9636ca8be56",
+  "balanceOfDead": "0x0000000000000000000000000000000000000000000000003560d4c67e47d673"
+ }
+}

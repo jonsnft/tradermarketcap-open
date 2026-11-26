@@ -26,6 +26,15 @@ const BSC_TOKENHUB = '0x0000000000000000000000000000000000001004';
 const BSC_ZERO = '0x0000000000000000000000000000000000000000';
 const BNB_TRACKER = 'https://www.bnbburn.info/api/getBnbSupply';
 
+// VVV (Venice): token contract on Base (Venice's help center "What is the Contract Address for the Venice token" and
+// its VVV fact sheet), Venice's own stats API (the feed behind its VVV dashboard at venice.ai/token), and the burn
+// addresses. VVV's ERC-20 lets tokens be sent to the zero address without lowering totalSupply, and Venice burns there:
+// the genesis airdrop burn (tx 0xf5a19b79...37af, listed in the fact sheet) sent 32,509,739 VVV to 0x0.
+const VVV = '0xacfE6019Ed1A7Dc6f7B508C02d1b04ec88cC21bf';
+const VVV_STATS = 'https://api.venice.ai/api/app/vvv/vvv_stats';
+const VVV_BURN_STATS = 'https://api.venice.ai/api/app/vvv/vvv_burn_stats';
+const ZERO = '0x0000000000000000000000000000000000000000';
+
 // TAP (TAP Protocol on Bitcoin, by Trac). Trac's public TAP Protocol reader: the REST reader Trac's own Digital Matter
 // World kit reads on mainnet. Trac's older socket endpoint, tap.trac.network, now answers 502. A second reader (any
 // Trac tap-reader REST endpoint) can be added with TMC_TAP_READER2, and then has to agree. See the tap method below.
@@ -381,6 +390,53 @@ const METHODS = {
   // TNK (Trac Network): sum of every Main Settlement Bus account, see tnkSupply in trac.mjs.
   async tnk(r = {}) {
     return tnkSupply(r);
+  },
+  // Venice (VVV, Base). Total is a chain read: totalSupply minus the VVV held by the zero address and 0x...dEaD
+  // (burned; VVV's ERC-20 does not lower totalSupply on a transfer to 0x0, and Venice's airdrop and buy-and-burn
+  // burns sit there). Circulating is Venice's own published figure from its stats API, the feed behind the VVV
+  // dashboard on venice.ai/token, as with Celestia: Venice publishes no list of the wallets it leaves out (treasury,
+  // Community Incentive Fund, team vesting streaming over 24 months from January 2025 per its fact sheet), so the
+  // gap is published as one line, sourced to Venice, instead of a sum of wallets we could not attribute.
+  // Venice does not subtract staked VVV as a whole (its circulating figure is above total minus staked). Checks: Venice's total and burned
+  // figures must match the chain within 0.5%, circulating must be below total, and staked below total; any error or
+  // NaN fails the read.
+  async venice() {
+    const [supply, zero, dead, stats, burn] = await Promise.all([
+      erc20TotalSupply('base', VVV),
+      erc20Balance('base', VVV, ZERO),
+      erc20Balance('base', VVV, BURN),
+      getJSON(VVV_STATS),
+      getJSON(VVV_BURN_STATS),
+    ]);
+    const unit = (v, what) => {
+      if (typeof v !== 'string' || !/^\d+$/.test(v)) throw new Error(`venice: ${what} is not an amount (${JSON.stringify(v)})`);
+      return Number(BigInt(v) / 10n ** 12n) / 1e6; // 18 decimals
+    };
+    const burned = zero + dead;
+    const total = supply - burned;
+    const vTotal = unit(stats?.totalSupplyCryptoBaseUnit, 'totalSupply');
+    const circulating = unit(stats?.circulatingSupplyCryptoBaseUnit, 'circulatingSupply');
+    const staked = unit(stats?.totalStakedCryptoBaseUnit, 'totalStaked');
+    const locked = unit(stats?.totalLockedCryptoBaseUnit, 'totalLocked');
+    const vBurned = unit(burn?.totalBurnedCryptoBaseUnit, 'totalBurned');
+    if (![supply, zero, dead, total].every(Number.isFinite) || !(total > 0)) throw new Error(`venice: bad chain read (${supply}, ${zero}, ${dead})`);
+    if (Math.abs(vTotal / total - 1) > 0.005) throw new Error(`venice: Venice total ${vTotal} disagrees with chain total ${total}`);
+    if (Math.abs(vBurned / burned - 1) > 0.005) throw new Error(`venice: Venice burned ${vBurned} disagrees with the chain (${burned})`);
+    if (!(circulating > 0 && circulating < total)) throw new Error(`venice: circulating ${circulating} not inside 0..${total}`);
+    if (!(staked < total)) throw new Error(`venice: staked ${staked} not below total ${total}`);
+    const fmt = v => Math.round(v).toLocaleString('en-US');
+    const holder = h => `${EXPLORER.base}/token/${VVV}?a=${h}`;
+    return {
+      circulating,
+      total,
+      src: `${EXPLORER.base}/token/${VVV}`,
+      excluded: [
+        { reason: 'Burned (sent to the zero address: genesis airdrop burn and Venice buy-and-burn)', holder: ZERO, amount: zero, src: holder(ZERO) },
+        ...(dead > 0 ? [{ reason: 'Burn address', holder: BURN, amount: dead, src: holder(BURN) }] : []),
+        { reason: 'Not circulating per Venice\'s published circulating supply. Venice does not list the wallets behind it; its fact sheet gives 35M of the 100M genesis supply to Venice.ai (team 10M streaming over 24 months, Community Incentive Fund 10M, Liquidity Fund 5M)', amount: total - circulating, src: VVV_STATS },
+      ],
+      note: `Total read from Base: totalSupply ${fmt(supply)} VVV minus ${fmt(burned)} VVV burned at the zero and dead addresses (Venice's burn stats agree: ${fmt(vBurned)}). Circulating is Venice's own figure from its stats API (${VVV_STATS}, the feed behind venice.ai/token); it does not subtract the ${fmt(staked)} VVV staked as a whole (it is above total minus staked). Venice also reports ${fmt(locked)} VVV locked to mint DIEM and does not say whether its figure counts them.`,
+    };
   },
   // Celestia (TIA): total is a chain read (bank supply of utia). Circulating is NOT read from the chain:
   // the genesis lockups (ecosystem 267,944,711 / investors 355,689,414 / core contributors 176,365,875 TIA,

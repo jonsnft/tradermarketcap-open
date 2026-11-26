@@ -1299,3 +1299,69 @@ test('TNK: a seed checkpoint too far behind the ledger asks for a rebuild', asyn
   delete process.env.TMC_TNK_SEED;
   tnkReset();
 });
+
+// Venice (VVV, Base). Real responses captured 2026-11-26 (test/fixtures/venice.json).
+const VVV_FX = JSON.parse(readFileSync(new URL('./fixtures/venice.json', import.meta.url), 'utf8'));
+function fakeVenice({ stats = VVV_FX.vvv_stats, burn = VVV_FX.vvv_burn_stats, rpc = VVV_FX.rpc, apiStatus = 200 } = {}) {
+  const calls = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    const reply = (body, status = 200) => ({ ok: status === 200, status, json: async () => body });
+    if (u === 'https://api.venice.ai/api/app/vvv/vvv_stats') { calls.push('stats'); return reply(stats, apiStatus); }
+    if (u === 'https://api.venice.ai/api/app/vvv/vvv_burn_stats') { calls.push('burn'); return reply(burn); }
+    assert.ok(u.includes('base'), 'only the Base RPC and the Venice API are called: ' + u);
+    const req = JSON.parse(opts.body);
+    assert.equal(req.method, 'eth_call');
+    assert.equal(req.params[0].to.toLowerCase(), '0xacfe6019ed1a7dc6f7b508c02d1b04ec88cc21bf');
+    const data = req.params[0].data;
+    let result;
+    if (data === '0x18160ddd') result = rpc.totalSupply;
+    else if (data === '0x313ce567') result = rpc.decimals;
+    else if (data === '0x70a08231' + '0'.repeat(64)) result = rpc.balanceOfZero;
+    else if (data.toLowerCase() === '0x70a08231' + '0'.repeat(24) + '000000000000000000000000000000000000dead') result = rpc.balanceOfDead;
+    else throw new Error('unexpected call data ' + data);
+    calls.push(data.slice(0, 10));
+    return reply({ jsonrpc: '2.0', id: req.id, result });
+  };
+  return calls;
+}
+
+test('VVV: total is the Base totalSupply minus the zero-address and dead burns, circulating is Venice\'s figure', async () => {
+  const rule = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'))['venice-token'];
+  assert.deepEqual(rule, { symbol: 'VVV', name: 'Venice Token', supply: { method: 'venice' } });
+  const calls = fakeVenice();
+  const s = await readSupply(rule.supply);
+  assert.ok(calls.includes('stats') && calls.includes('burn') && calls.includes('0x18160ddd'));
+  assert.equal(Math.round(s.total), 81295786, '115,271,004 totalSupply - 33,975,214 at 0x0 - 3.85 at 0xdEaD');
+  assert.equal(Math.round(s.circulating), 49537806);
+  assert.equal(s.max, null);
+  assert.deepEqual(s.excluded.map(e => e.holder ?? 'venice'), ['0x0000000000000000000000000000000000000000', '0x000000000000000000000000000000000000dEaD', 'venice']);
+  assert.equal(Math.round(s.excluded[2].amount), Math.round(s.total - s.circulating));
+  assert.equal(s.excluded[2].src, 'https://api.venice.ai/api/app/vvv/vvv_stats');
+  assert.equal(s.src, 'https://basescan.org/token/0xacfE6019Ed1A7Dc6f7B508C02d1b04ec88cC21bf');
+  assert.match(s.note, /does not subtract the 32,549,786 VVV staked as a whole/);
+  assert.match(s.note, /8,507,286 VVV locked to mint DIEM/);
+  assert.equal(s.checked, true);
+});
+
+test('VVV: Venice figures that disagree with the chain, or circulating outside 0..total, fail the read', async () => {
+  fakeVenice({ stats: { ...VVV_FX.vvv_stats, totalSupplyCryptoBaseUnit: '90000000000000000000000000' } });
+  await assert.rejects(readSupply({ method: 'venice' }), /disagrees with chain total/);
+  fakeVenice({ burn: { totalBurnedCryptoBaseUnit: '30000000000000000000000000' } });
+  await assert.rejects(readSupply({ method: 'venice' }), /burned .* disagrees with the chain/);
+  fakeVenice({ stats: { ...VVV_FX.vvv_stats, circulatingSupplyCryptoBaseUnit: '82000000000000000000000000' } });
+  await assert.rejects(readSupply({ method: 'venice' }), /circulating .* not inside/);
+  fakeVenice({ stats: { ...VVV_FX.vvv_stats, totalStakedCryptoBaseUnit: '90000000000000000000000000' } });
+  await assert.rejects(readSupply({ method: 'venice' }), /staked .* not below total/);
+});
+
+test('VVV: API errors and NaN fail the read', async () => {
+  fakeVenice({ apiStatus: 503 });
+  await assert.rejects(readSupply({ method: 'venice' }), /503/);
+  for (const [field, value] of [['circulatingSupplyCryptoBaseUnit', 'NaN'], ['totalSupplyCryptoBaseUnit', undefined], ['totalStakedCryptoBaseUnit', '-1'], ['totalLockedCryptoBaseUnit', 12]]) {
+    fakeVenice({ stats: { ...VVV_FX.vvv_stats, [field]: value } });
+    await assert.rejects(readSupply({ method: 'venice' }), /is not an amount/, field);
+  }
+  fakeVenice({ burn: {} });
+  await assert.rejects(readSupply({ method: 'venice' }), /totalBurned is not an amount/);
+});
