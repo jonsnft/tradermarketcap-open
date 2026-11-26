@@ -1299,3 +1299,57 @@ test('TNK: a seed checkpoint too far behind the ledger asks for a rebuild', asyn
   delete process.env.TMC_TNK_SEED;
   tnkReset();
 });
+
+// Worldcoin (WLD): Ethereum total, Optimism checked against the OP bridge. eth_call results captured 2026-11-26.
+const WLD_RPC = {
+  eth: {
+    '0x18160ddd': '0x0000000000000000000000000000000000000000204fce5e3e25026110000000', // 10,000,000,000
+    '0x313ce567': '0x0000000000000000000000000000000000000000000000000000000000000012',
+    dead: '0x00000000000000000000000000000000000000000000000005c8ed583541926f', // 0.417
+    '99c9fc46f92e8a1c0dec1b1747d010903e884be1': '0x000000000000000000000000000000000000000001a3a4538426c643cd02be2f', // OP L1 bridge 507,315,927
+    '470458c91978d2d929704489ad730dc3e3001113': '0x000000000000000000000000000000000000000002a5344500bca24488ce8bb0', // World Chain L1 bridge
+  },
+  optimism: {
+    '0x18160ddd': '0x000000000000000000000000000000000000000001a1dda1420fbdb34263a590', // 505,168,684
+    '0x313ce567': '0x0000000000000000000000000000000000000000000000000000000000000012',
+    '0xd6c0b2c4': '0x000000000000000000000000163f8c2467924be0ae7b5347228cabf260318753', // remoteToken()
+    '0xe78cea92': '0x0000000000000000000000004200000000000000000000000000000000000010', // bridge()
+  },
+};
+function fakeWld(over = {}) {
+  const rpc = { eth: { ...WLD_RPC.eth, ...over.eth }, optimism: { ...WLD_RPC.optimism, ...over.optimism } };
+  globalThis.fetch = async (url, opts = {}) => {
+    const chain = String(url).includes('optimism') ? 'optimism' : 'eth';
+    const req = JSON.parse(opts.body);
+    assert.equal(req.method, 'eth_call');
+    const data = req.params[0].data.toLowerCase();
+    let result = data.startsWith('0x70a08231') ? rpc[chain][data.slice(-40) === '000000000000000000000000000000000000dead' ? 'dead' : data.slice(-40)] : rpc[chain][data];
+    if (result === undefined) throw new Error(`unexpected ${chain} call ${data}`);
+    if (result instanceof Error) return { ok: false, status: 503, json: async () => ({}) };
+    return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) };
+  };
+}
+
+test('WLD: total from Ethereum, Optimism checked against the OP bridge, circulating withheld', async () => {
+  const rule = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8')).worldcoin;
+  assert.deepEqual(rule, { symbol: 'WLD', name: 'Worldcoin', supply: { method: 'worldcoin' } });
+  fakeWld();
+  const s = await readSupply(rule.supply);
+  assert.ok(Math.abs(s.total - (1e10 - 0.41738)) < 0.01);
+  assert.equal(s.circulating, null);
+  assert.match(s.note, /less 0\.42 at the burn address\. The 505,168,684 WLD on Optimism/);
+  assert.equal(s.excluded[0].holder, '0x000000000000000000000000000000000000dEaD');
+  assert.match(s.note, /backed by 507,315,927 WLD locked in OP Mainnet's L1StandardBridge/);
+  assert.match(s.note, /Circulating is withheld/);
+});
+
+test('WLD: a non-standard Optimism token, more WLD on Optimism than locked, or a failed read fails', async () => {
+  fakeWld({ optimism: { '0xd6c0b2c4': '0x000000000000000000000000' + '11'.repeat(20) } });
+  await assert.rejects(readSupply({ method: 'worldcoin' }), /not the standard-bridged Ethereum WLD/);
+  fakeWld({ optimism: { '0xe78cea92': '0x000000000000000000000000' + '22'.repeat(20) } });
+  await assert.rejects(readSupply({ method: 'worldcoin' }), /not the standard-bridged Ethereum WLD/);
+  fakeWld({ optimism: { '0x18160ddd': '0x' + (600000000n * 10n ** 18n).toString(16).padStart(64, '0') } });
+  await assert.rejects(readSupply({ method: 'worldcoin' }), /above the .* locked in the OP bridge/);
+  fakeWld({ eth: { '0x18160ddd': new Error('down') } });
+  await assert.rejects(readSupply({ method: 'worldcoin' }), /503/);
+});

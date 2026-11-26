@@ -26,6 +26,16 @@ const BSC_TOKENHUB = '0x0000000000000000000000000000000000001004';
 const BSC_ZERO = '0x0000000000000000000000000000000000000000';
 const BNB_TRACKER = 'https://www.bnbburn.info/api/getBnbSupply';
 
+// WLD (Worldcoin): the ERC-20 on Ethereum holds the whole 10B supply. WLD on Optimism is an OptimismMintableERC20 whose
+// remoteToken() is the Ethereum WLD and whose bridge is OP's L2StandardBridge (0x4200...0010): every WLD there is
+// backed by WLD locked in OP Mainnet's L1StandardBridge on Ethereum, so it is checked, not added. World Chain's WLD is
+// bridged the same way (World Chain L1StandardBridge, Etherscan label "World Chain: L1 Standard Bridge Proxy").
+const WLD_ETH = '0x163f8C2467924be0ae7B5347228CABF260318753';
+const WLD_OP = '0xdC6fF44d5d932Cbd77B52E5612Ba0529DC6226F1';
+const OP_L1_BRIDGE = '0x99C9fc46f92E8a1c0deC1b1747d010903E884bE1';
+const OP_L2_BRIDGE = '0x4200000000000000000000000000000000000010';
+const WORLDCHAIN_L1_BRIDGE = '0x470458C91978D2d929704489Ad730DC3E3001113';
+
 // TAP (TAP Protocol on Bitcoin, by Trac). Trac's public TAP Protocol reader: the REST reader Trac's own Digital Matter
 // World kit reads on mainnet. Trac's older socket endpoint, tap.trac.network, now answers 502. A second reader (any
 // Trac tap-reader REST endpoint) can be added with TMC_TAP_READER2, and then has to agree. See the tap method below.
@@ -381,6 +391,37 @@ const METHODS = {
   // TNK (Trac Network): sum of every Main Settlement Bus account, see tnkSupply in trac.mjs.
   async tnk(r = {}) {
     return tnkSupply(r);
+  },
+  // Worldcoin (WLD). Total is read from Ethereum: totalSupply of the WLD ERC-20 minus the dead-address balance.
+  // Optimism is read too, as a check: its WLD must name the Ethereum WLD as remoteToken, use OP's standard bridge,
+  // and not exceed the WLD locked in OP Mainnet's L1StandardBridge, so nothing is counted twice.
+  // Circulating is withheld: most WLD is still locked in daily unlock schedules (World: 4.9B of 10B unlocked in
+  // April 2026), and the team and investor unlocks are not attributed here to published addresses, so a circulating
+  // figure built from chain balances could overstate. The rule can set circulating once those locks are sourced.
+  async worldcoin(r = {}) {
+    const addr = h => '0x' + String(h).slice(-40).toLowerCase();
+    const [total, dead, opTotal, opRemote, opBridge, lockedOp, lockedWorld] = await Promise.all([
+      erc20TotalSupply('eth', WLD_ETH),
+      erc20Balance('eth', WLD_ETH, BURN),
+      erc20TotalSupply('optimism', WLD_OP),
+      evm('optimism', 'eth_call', [{ to: WLD_OP, data: '0xd6c0b2c4' }, 'latest']), // remoteToken()
+      evm('optimism', 'eth_call', [{ to: WLD_OP, data: '0xe78cea92' }, 'latest']), // bridge()
+      erc20Balance('eth', WLD_ETH, OP_L1_BRIDGE),
+      erc20Balance('eth', WLD_ETH, WORLDCHAIN_L1_BRIDGE),
+    ]);
+    if (![total, dead, opTotal, lockedOp, lockedWorld].every(Number.isFinite) || !(total > 0)) throw new Error('worldcoin: bad chain read');
+    if (addr(opRemote) !== WLD_ETH.toLowerCase() || addr(opBridge) !== OP_L2_BRIDGE.toLowerCase()) throw new Error(`worldcoin: Optimism WLD is not the standard-bridged Ethereum WLD (${opRemote}, ${opBridge})`);
+    if (opTotal > lockedOp * 1.0001) throw new Error(`worldcoin: Optimism WLD ${opTotal} above the ${lockedOp} locked in the OP bridge`);
+    const net = total - dead;
+    const fmt = v => Math.round(v).toLocaleString('en-US');
+    const eth = h => `${EXPLORER.eth}/token/${WLD_ETH}?a=${h}`;
+    return {
+      circulating: r.circulating === true ? net : null,
+      total: net,
+      src: `${EXPLORER.eth}/token/${WLD_ETH}`,
+      excluded: dead > 0 ? [{ reason: 'Burn address', holder: BURN, amount: dead, src: eth(BURN) }] : [],
+      note: `Total read from Ethereum, where the whole supply is minted: ${fmt(total)} WLD, less ${dead.toFixed(2)} at the burn address. The ${fmt(opTotal)} WLD on Optimism (${EXPLORER.optimism}/token/${WLD_OP}) are bridged copies (remoteToken = Ethereum WLD, OP standard bridge) backed by ${fmt(lockedOp)} WLD locked in OP Mainnet's L1StandardBridge on Ethereum, so they are inside the Ethereum figure; World Chain's ${fmt(lockedWorld)} bridged WLD are locked the same way. Circulating is withheld: team and investor tokens still unlock daily and their locks are not attributed to published addresses here, so a balance-based figure could overstate it.`,
+    };
   },
   // Celestia (TIA): total is a chain read (bank supply of utia). Circulating is NOT read from the chain:
   // the genesis lockups (ecosystem 267,944,711 / investors 355,689,414 / core contributors 176,365,875 TIA,
