@@ -293,6 +293,29 @@
       "note": "Total is the Monad Foundation's 100 billion MON genesis (https://monad.xyz/blog/mon-tokenomics-overview) plus piecewise consensus block rewards minted on-chain via syscallReward (25 MON/block across blocks 37,304,999..89,656,734, then 18 MON/block from MIP-12 block 89,656,735 onward; https://docs.monad.xyz/monad-arch/consensus/staking) less zero and dead address burns. Protocol EIP-1559 base-fee burns are not exposed cumulatively by Monad JSON-RPC or a primary Foundation endpoint and are not subtracted. Staked MON at the 0x1000 staking precompile belongs to delegators and remains circulating. Circulating supply is withheld per Foundation tokenomics disclosure: team, investor, Category Labs treasury and ecosystem allocations are locked off-chain without on-chain labeled contracts."
     }
   },
+  "initia": {
+    "symbol": "INIT",
+    "name": "Initia",
+    "supply": {
+      "method": "cosmos",
+      "lcd": "https://rest.initia.xyz",
+      "denom": "uinit",
+      "decimals": 6,
+      "circulating": false,
+      "note": "Total is a chain read from the chain's own public node: the bank supply of uinit from Initia's LCD https://rest.initia.xyz (chain_id interwoven-1 via /cosmos/base/tendermint/v1beta1/node_info) reads exactly 1,000,000,000 INIT (2026-11-27), matching the fixed genesis mint of 1 billion INIT per Initia's docs (https://docs.initia.xyz/home/core-concepts/init-token/tokenomics, where staking and VIP rewards are released from pre-mined buckets rather than new issuance) and the MiCA whitepaper (https://initiafoundation.com/documents/initia-whitepaper-20260306.pdf). INIT bridged onto Initia's app-chains (Minitia rollups) is locked on L1 and counted once. Circulating is withheld: the Foundation (77.5M), Protocol Developers (150M), Protocol Sales (152.5M), Enshrined Liquidity & Staking (250M), VIP Rewards (250M) and Echo.xyz Community Sale (10M) allocations vest on the schedules in those docs, but the docs publish no wallet addresses for them, a scan of the first 30,000 auth accounts (2026-11-27) surfaced only Base/Object/Table/Bridge accounts with no standard Cosmos vesting accounts, and the community pool — the one provable non-circulating wallet, listed as excluded — holds only ~0.48M INIT, so a total-minus-known residual would badly overstate circulating."
+    }
+  },
+  "ripple-usd": {
+    "symbol": "RLUSD",
+    "name": "Ripple USD",
+    "links": {
+      "site": "https://ripple.com/solutions/stablecoin/",
+      "contract": "https://etherscan.io/token/0x8292Bb45bf1Ee4d140127049757C2E0fF06317eD"
+    },
+    "supply": {
+      "method": "rlusd"
+    }
+  },
   "momentum": {
     "symbol": "MMT",
     "name": "Momentum",

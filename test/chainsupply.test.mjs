@@ -2287,6 +2287,268 @@ test('monad: invalid configuration fails closed rather than guessing', async () 
   assert.equal(globalThis.fetch, prev, 'globalThis.fetch is restored after test');
 });
 
+// ---- bounty #141: Initia (INIT) ----
+// INIT trades on the site with no supply rule. Its own chain is a Cosmos SDK chain (chain_id
+// interwoven-1) whose bank supply of uinit reads exactly the fixed 1B genesis mint from the
+// chain's public LCD; the team/investor/foundation/VIP locks are documented but not published as
+// itemizable wallets, so the rule publishes total and withholds circulating (issue #141's own
+// fallback), listing only the provable community-pool exclusion.
+const INITIA_LCD = 'https://rest.initia.xyz';
+function fakeInitiaLcd(overrides = {}) {
+  const prev = globalThis.fetch;
+  globalThis.fetch = async url => {
+    const u = String(url);
+    assert.ok(u.startsWith(INITIA_LCD + '/'), 'initia rule must read only its own LCD: ' + u);
+    if (u.includes('/cosmos/bank/v1beta1/supply/by_denom?denom=uinit'))
+      return { ok: true, json: async () => overrides.supply ?? { amount: { denom: 'uinit', amount: '1000000000000000' } } };
+    if (u.includes('/cosmos/distribution/v1beta1/community_pool'))
+      return { ok: true, json: async () => overrides.pool ?? { pool: [{ denom: 'uinit', amount: '483064043482.706274570695195000' }] } };
+    throw new Error('unexpected fetch ' + u);
+  };
+  return { restore: () => { globalThis.fetch = prev; } };
+}
+const seedCoin = k => JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'))[k];
+
+test('bounty #141 initia: seed rule reads the 1B total from Initia\'s own LCD, lists the community pool, and withholds circulating', async () => {
+  const rule = seedCoin('initia').supply;
+  assert.equal(seedCoin('initia').symbol, 'INIT');
+  assert.equal(rule.method, 'cosmos');
+  assert.equal(rule.lcd, INITIA_LCD);
+  assert.equal(rule.denom, 'uinit');
+  assert.equal(rule.circulating, false, 'circulating is withheld per issue #141');
+  assert.match(rule.note, /1,000,000,000|1 billion/);
+  assert.match(rule.note, /docs\.initia\.xyz\/home\/core-concepts\/init-token\/tokenomics/);
+  const f = fakeInitiaLcd();
+  try {
+    const s = await readSupply(rule);
+    assert.equal(s.total, 1_000_000_000);
+    assert.equal(s.circulating, null, 'must not publish an unprovable circulating figure');
+    assert.equal(s.excluded.length, 1);
+    assert.equal(s.excluded[0].reason, 'Community pool (on-chain treasury)');
+    assert.ok(Math.abs(s.excluded[0].amount - 483_064.043482706) < 1e-3);
+    assert.equal(s.src, INITIA_LCD);
+    assert.equal(s.checked, true);
+  } finally { f.restore(); }
+});
+
+test('bounty #141 initia: a broken, non-numeric, zero or negative LCD read fails closed instead of publishing NaN', async () => {
+  const base = { method: 'cosmos', lcd: INITIA_LCD, denom: 'uinit', circulating: false };
+  for (const supply of [
+    { amount: {} }, // no amount field -> NaN
+    { amount: { amount: 'not-a-number' } }, // garbage
+    { amount: { amount: '0' } }, // empty supply is never a publishable total
+    { amount: { amount: '-5000000' } }, // negatives cannot be a supply
+  ]) {
+    const f = fakeInitiaLcd({ supply });
+    try { await assert.rejects(readSupply(base), /not a positive number/); }
+    finally { f.restore(); }
+  }
+});
+
+test('bounty #141: a cosmos rule WITHOUT circulating:false still publishes total minus the community pool', async () => {
+  // regression guard for the shared cosmos method: the withhold flag must not change existing behaviour
+  const prev = globalThis.fetch;
+  globalThis.fetch = async url => {
+    const u = String(url);
+    if (u.includes('/cosmos/bank/v1beta1/supply/by_denom?denom=uatom'))
+      return { ok: true, json: async () => ({ amount: { denom: 'uatom', amount: '400000000000' } }) };
+    if (u.includes('/cosmos/distribution/v1beta1/community_pool'))
+      return { ok: true, json: async () => ({ pool: [{ denom: 'uatom', amount: '5000000' }] }) };
+    throw new Error('unexpected fetch ' + u);
+  };
+  try {
+    const s = await readSupply({ method: 'cosmos', lcd: 'https://lcd.example', denom: 'uatom' });
+    assert.equal(s.total, 400_000);
+    assert.equal(s.circulating, 399_995); // 400k minus the 5 ATOM community pool
+    assert.equal(s.excluded.length, 1);
+  } finally { globalThis.fetch = prev; }
+});
+
+// ---------- bounty #139 — Ripple USD (RLUSD) ----------
+// Real live responses captured on 2026-11-27 from https://s1.ripple.com:51234 (ledger 108,609,757)
+// and Ethereum mainnet 0x8292Bb45bf1Ee4d140127049757C2E0fF06317eD.
+const RLUSD_HEX_CODE = '524C555344000000000000000000000000000000';
+const RLUSD_ETH_CONTRACT = '0x8292bb45bf1ee4d140127049757c2e0ff06317ed';
+const RLUSD_DOMAIN_HEX = Buffer.from('https://ripple.com/', 'utf8').toString('hex').toUpperCase();
+const RLUSD_TRUE_WORD = '0x' + '0'.repeat(63) + '1';
+const RLUSD_FALSE_WORD = '0x' + '0'.repeat(64);
+const RLUSD_ETH_TOTAL_HEX = '0x' + 2049617653122889529286669761n.toString(16).padStart(64, '0');
+const RLUSD_ETH_BALANCES = {
+  '0000000000000000000000000000000000000000': '0x' + '0'.repeat(64),
+  '000000000000000000000000000000000000dead': '0x' + (85000000000000000n).toString(16).padStart(64, '0'), // 0.085
+  '8292bb45bf1ee4d140127049757c2e0ff06317ed': '0x' + (51733610679000000000000n).toString(16).padStart(64, '0'), // 51,733.610679
+  '97e9d0b0bcbe86e1e230b0ffd3a5f1f9b8428591': '0x' + '0'.repeat(64), // MINTER_ROLE
+  'd48ede10152fcad67621fc5a6ae30b5b79fedd68': '0x' + (1600000n * 10n ** 18n).toString(16).padStart(64, '0'), // BURNER_ROLE: 1,600,000
+  'a2eea193444b16fe2d18cfe977aceeea6dd9c367': '0x' + (2004777770000000000000000n).toString(16).padStart(64, '0'), // BURNER_ROLE: 2,004,777.77
+  'fbca8b5f5794456b59ad4177e5b212d0db600bb6': '0x' + '0'.repeat(64),
+  '860a80bd349dc4e46dc7345600eb627552ff898e': '0x' + '0'.repeat(64),
+  'b723d5ef303711d774fed6435ed6f5e82ed155ea': '0x' + '0'.repeat(64),
+};
+
+function fakeRlusd(over = {}) {
+  const ledgerIndex = over.ledgerIndex ?? 108609757;
+  const domainHex = over.domainHex ?? RLUSD_DOMAIN_HEX;
+  const xrplGross = over.xrplGross ?? '742028563.2615622';
+  const xrplNet = over.xrplNet ?? '718018563.2615622';
+  const xrplHot1 = over.xrplHot1 ?? '24010000';
+  const ethTotal = over.ethTotal ?? RLUSD_ETH_TOTAL_HEX;
+  const ethDecimals = over.ethDecimals ?? ('0x' + (18).toString(16).padStart(64, '0'));
+  const ethBals = { ...RLUSD_ETH_BALANCES, ...(over.ethBalances || {}) };
+  const roleWord = over.roleWord ?? RLUSD_TRUE_WORD;
+  const calls = [];
+
+  globalThis.fetch = async (url, opts = {}) => {
+    if (over.httpStatus) return { ok: false, status: over.httpStatus, json: async () => ({}) };
+    const u = String(url);
+    const req = JSON.parse(opts.body);
+    if (u.includes('ripple.com')) {
+      calls.push('xrpl:' + req.method);
+      const p = req.params[0];
+      if (over.xrplError) {
+        return { ok: true, status: 200, json: async () => ({ result: { status: 'error', error_message: over.xrplError } }) };
+      }
+      if (req.method === 'account_info') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: { status: 'success', ledger_index: ledgerIndex, account_data: { Account: p.account, Domain: domainHex } },
+          }),
+        };
+      }
+      if (req.method === 'gateway_balances') {
+        assert.equal(p.ledger_index, ledgerIndex, 'both gateway_balances calls pin the same validated ledger_index');
+        if (p.hotwallet) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              result: {
+                status: 'success',
+                ledger_index: ledgerIndex,
+                obligations: { [RLUSD_HEX_CODE]: xrplNet },
+                balances: {
+                  r9c6A65SmhhZALrkMTpqc9X3kGjv5gtNNk: xrplHot1 === null ? [] : [{ currency: RLUSD_HEX_CODE, value: xrplHot1 }],
+                },
+              },
+            }),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            result: { status: 'success', ledger_index: ledgerIndex, obligations: { [RLUSD_HEX_CODE]: xrplGross } },
+          }),
+        };
+      }
+      throw new Error('unexpected XRPL method ' + req.method);
+    }
+
+    assert.equal(req.method, 'eth_call');
+    if (over.ethRpcError) {
+      return { ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, error: { message: over.ethRpcError } }) };
+    }
+    const target = req.params[0].to.toLowerCase();
+    assert.equal(target, RLUSD_ETH_CONTRACT);
+    const data = req.params[0].data.toLowerCase();
+    calls.push('eth:' + data.slice(0, 10));
+    const reply = result => ({ ok: true, status: 200, json: async () => ({ jsonrpc: '2.0', id: req.id, result }) });
+    if (data === '0x18160ddd') return reply(ethTotal);
+    if (data === '0x313ce567') return reply(ethDecimals);
+    if (data.startsWith('0x70a08231')) {
+      const holder = data.slice(-40);
+      if (!(holder in ethBals)) throw new Error('unexpected RLUSD balanceOf holder ' + holder);
+      return reply(ethBals[holder]);
+    }
+    if (data.startsWith('0x91d14854')) {
+      const holder = data.slice(-40);
+      if (over.revokedHolders?.includes(holder)) return reply(RLUSD_FALSE_WORD);
+      return reply(roleWord);
+    }
+    throw new Error('unexpected Ethereum call ' + data);
+  };
+  return calls;
+}
+
+test('ripple-usd: sums Ethereum ERC-20 totalSupply and XRPL issuer obligations, subtracts verified XRPL treasury and Ethereum MINTER/BURNER vaults', async () => {
+  const prev = globalThis.fetch;
+  try {
+    const coins = JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8'));
+    const entry = coins['ripple-usd'];
+    assert.equal(entry.symbol, 'RLUSD');
+    assert.equal(entry.name, 'Ripple USD');
+    assert.equal(entry.supply.method, 'rlusd');
+
+    const calls = fakeRlusd();
+    const s = await readSupply(entry.supply);
+    assert.ok(calls.includes('xrpl:account_info'));
+    assert.ok(calls.includes('xrpl:gateway_balances'));
+    assert.ok(calls.includes('eth:0x18160ddd'));
+    assert.ok(calls.includes('eth:0x91d14854'));
+
+    const expectedEth = Number(2049617653122889529286669761n) / 1e18;
+    const expectedXrpl = 742028563.2615622;
+    const expectedExcluded = 24010000 + 0.085 + 51733.610679 + 1600000 + 2004777.77;
+    const expectedTotal = expectedEth + expectedXrpl;
+    const expectedCirc = expectedTotal - expectedExcluded;
+
+    assert.ok(Math.abs(s.total - expectedTotal) < 1e-3);
+    assert.ok(Math.abs(s.circulating - expectedCirc) < 1e-3);
+    assert.equal(s.max, null);
+    assert.equal(s.checked, true);
+    assert.equal(s.method, 'rlusd');
+    assert.equal(s.src, 'https://ripple.com/solutions/stablecoin/');
+    assert.equal(s.parts.length, 2);
+    assert.deepEqual(s.parts.map(p => p.chain), ['eth', 'xrpl']);
+    assert.deepEqual(
+      s.excluded.map(e => e.holder),
+      [
+        'r9c6A65SmhhZALrkMTpqc9X3kGjv5gtNNk',
+        '0x000000000000000000000000000000000000dEaD',
+        '0x8292Bb45bf1Ee4d140127049757C2E0fF06317eD',
+        '0xd48EdE10152fcad67621Fc5A6aE30B5b79FeDd68',
+        '0xa2Eea193444B16fE2D18CFe977aceeea6Dd9c367',
+      ],
+      'zero-balance treasury and burner vaults are omitted while active non-circulating balances are listed with sources',
+    );
+    assert.match(s.note, /bridged L2 copies .* are not added again/i);
+  } finally {
+    globalThis.fetch = prev;
+  }
+});
+
+test('ripple-usd: fails closed on XRPL/Ethereum errors, NaN obligations, wrong issuer domain, ledger mismatch, or missing contract roles', async () => {
+  const prev = globalThis.fetch;
+  try {
+    fakeRlusd({ httpStatus: 503 });
+    await assert.rejects(readSupply({ method: 'rlusd' }), /503/);
+
+    fakeRlusd({ xrplError: 'actNotFound' });
+    await assert.rejects(readSupply({ method: 'rlusd' }), /actNotFound/);
+
+    fakeRlusd({ domainHex: Buffer.from('https://example.com', 'utf8').toString('hex') });
+    await assert.rejects(readSupply({ method: 'rlusd' }), /unexpected XRPL issuer Domain/);
+
+    fakeRlusd({ xrplGross: 'NaN' });
+    await assert.rejects(readSupply({ method: 'rlusd' }), /invalid XRPL RLUSD obligations/);
+
+    fakeRlusd({ xrplNet: '700000000' }); // 742.02M - 24.01M != 700M
+    await assert.rejects(readSupply({ method: 'rlusd' }), /XRPL obligations mismatch/);
+
+    fakeRlusd({ ethDecimals: '0x' + (6).toString(16).padStart(64, '0') });
+    await assert.rejects(readSupply({ method: 'rlusd' }), /unexpected Ethereum RLUSD decimals/);
+
+    fakeRlusd({ roleWord: RLUSD_FALSE_WORD });
+    await assert.rejects(readSupply({ method: 'rlusd' }), /MINTER_ROLE or BURNER_ROLE multisig verification failed/);
+
+    fakeRlusd({ ethRpcError: 'execution reverted' });
+    await assert.rejects(readSupply({ method: 'rlusd' }), /execution reverted/);
+  } finally {
+    globalThis.fetch = prev;
+  }
+});
+
 // ---------- Momentum (MMT, Sui) ----------
 // Real Sui mainnet GraphQL answer captured 2026-11-27 (test/fixtures/momentum-sui.json).
 const MMT_FX = JSON.parse(readFileSync(new URL('./fixtures/momentum-sui.json', import.meta.url), 'utf8'));
