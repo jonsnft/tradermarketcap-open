@@ -1532,7 +1532,80 @@ const METHODS = {
       note: r.note || `Total is the Monad Foundation's 100 billion MON genesis (https://monad.xyz/blog/mon-tokenomics-overview) plus piecewise consensus block rewards minted on-chain via syscallReward (25 MON/block across blocks 37,304,999..89,656,734, then 18 MON/block from MIP-12 block 89,656,735 onward; https://docs.monad.xyz/monad-arch/consensus/staking) less ${burned.toLocaleString('en-US', { maximumFractionDigits: 0 })} MON burned at the zero and dead addresses. Protocol EIP-1559 base-fee burns are not exposed cumulatively by Monad JSON-RPC or a primary Foundation endpoint and are not subtracted. Staked MON (${staked.toLocaleString('en-US', { maximumFractionDigits: 0 })} MON at 0x1000) belongs to delegators and remains circulating. Circulating supply is withheld per Foundation tokenomics disclosure: team, investor, Category Labs treasury and ecosystem allocations are locked off-chain without on-chain labeled contracts.`,
     };
   },
+  // Momentum (MMT) on Sui. Momentum's docs publish no mainnet coin type, so it is taken from the two pools its own
+  // emissions announcement links (docs.mmt.finance/overview/emissions.md: MMT/USDC and MMT/SUI on app.mmt.finance);
+  // both pool objects are read every pass and must be Pool<…> types that carry exactly this coin type.
+  // Total is the coin's live supply (Sui GraphQL coinMetadata, from its TreasuryCap) less MMT sent to 0x0.
+  // MMT has an emission schedule, not a fixed cap. The two multisigs the same announcement names as the only
+  // receivers of the November and December 2026 emission mints (campaign allocation and emission reserve) are read
+  // and listed. Circulating is withheld: docs.mmt.finance/overview/mmt-token.md keeps team allocations locked for
+  // 48 months after TGE and investor allocations behind a 12-month cliff and 48-month vesting, but publishes no
+  // address for any of them, so total minus the two multisigs would overstate circulating.
+  async momentum(r = {}) {
+    const coinType = MMT_COIN_TYPE;
+    const holders = MMT_WALLETS.map(([holder]) => holder);
+    const bal = (alias, a) => `${alias}: address(address: "${a}") { balance(coinType: "${coinType}") { totalBalance } }`;
+    const pool = (alias, a) => `${alias}: object(address: "${a}") { asMoveObject { contents { type { repr } } } }`;
+    const query = `{ coinMetadata(coinType: "${coinType}") { decimals symbol supply } ${bal('z', SUI_ZERO)} `
+      + holders.map((a, i) => bal('w' + i, a)).join(' ') + ' '
+      + MMT_POOLS.map((a, i) => pool('p' + i, a)).join(' ') + ' }';
+    const res = await getJSON(SUI_GRAPHQL, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query }),
+    });
+    const d = res?.data;
+    if (!d || res.errors) throw new Error('momentum: bad GraphQL answer');
+    const meta = d.coinMetadata;
+    if (meta?.symbol !== 'MMT' || meta.decimals !== 9 || !/^\d+$/.test(meta?.supply ?? '')) {
+      throw new Error('momentum: bad MMT coin metadata');
+    }
+    for (let i = 0; i < MMT_POOLS.length; i++) {
+      const repr = d['p' + i]?.asMoveObject?.contents?.type?.repr || '';
+      const args = repr.match(/::pool::Pool<(.+)>$/)?.[1]?.split(',') || [];
+      if (!args.includes(coinType)) throw new Error('momentum: pool ' + MMT_POOLS[i] + ' is not an MMT pool');
+    }
+    const raw = alias => {
+      const v = d[alias]?.balance?.totalBalance;
+      if (typeof v !== 'string' || !/^\d+$/.test(v)) throw new Error('momentum: bad balance ' + alias);
+      return BigInt(v);
+    };
+    const mist = BigInt(meta.supply);
+    const zero = raw('z');
+    const held = holders.map((_, i) => raw('w' + i));
+    const out = held.reduce((a, b) => a + b, 0n);
+    if (mist <= 0n || zero + out > mist) throw new Error('momentum: balances exceed supply');
+    const total = splUi(mist - zero, 9);
+    if (!(total > 0) || !Number.isFinite(total)) throw new Error('momentum: bad total ' + total);
+    const excluded = MMT_WALLETS.map(([holder, reason], i) => ({ reason, holder, amount: splUi(held[i], 9), src: SUIVISION + holder }))
+      .filter(e => e.amount > 0);
+    const fmt = v => Math.round(v).toLocaleString('en-US');
+    return {
+      circulating: r.circulating === true ? total - excluded.reduce((s, e) => s + e.amount, 0) : null,
+      total,
+      src: SUI_GRAPHQL,
+      parts: [{ chain: 'sui', amount: total, src: 'https://suivision.xyz/coin/' + coinType }],
+      excluded,
+      note: `Total read from Sui mainnet GraphQL: supply of ${coinType} (the coin type of the MMT/USDC and MMT/SUI pools linked in ${MMT_EMISSIONS}) less ${splUi(zero, 9)} MMT at 0x0. MMT follows an emission schedule, not a fixed cap. The emission multisigs named in that announcement hold ${fmt(splUi(out, 9))} MMT. Circulating is withheld: team allocations stay locked for 48 months after TGE and investor allocations vest over 48 months after a 12-month cliff (${MMT_TOKENOMICS}), and Momentum publishes no address for them, so total minus the listed multisigs would overstate circulating.`,
+    };
+  },
 };
+
+// Momentum (MMT) on Sui, read by the momentum method.
+const SUI_GRAPHQL = 'https://graphql.mainnet.sui.io/graphql';
+const SUI_ZERO = '0x0000000000000000000000000000000000000000000000000000000000000000';
+const SUIVISION = 'https://suivision.xyz/account/';
+const MMT_COIN_TYPE = '0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT';
+const MMT_EMISSIONS = 'https://docs.mmt.finance/overview/emissions.md';
+const MMT_TOKENOMICS = 'https://docs.mmt.finance/overview/mmt-token.md';
+// Pools linked from the emissions announcement (app.mmt.finance/liquidity/<pool>): MMT/USDC and MMT/SUI.
+const MMT_POOLS = [
+  '0xc7993ebf7a1e629a942f69e9b3a8dccc3a96db0df3991812578815a0dda08a91',
+  '0x8fbcc943593b0e33f3fb15311cbf81d73f1ccf26c96b85ea290ff6dfcdbe4c9f',
+];
+// The two public addresses that receive the November/December 2026 emission mints (same announcement).
+const MMT_WALLETS = [
+  ['0x8bb5a9f523ef6a0eb74d7c0f636fd3fbff3489135ca330ec2e2e656d60314de1', 'Momentum emission reserve multisig (held for strategic liquidity providers and partners, docs.mmt.finance/overview/emissions.md)'],
+  ['0x6c7ba0bccc5b6089500ce1d6c2b8fbd7bc5daeba3479ea268842f40fdfd3ec62', 'Momentum Ignition campaign allocation multisig (undistributed campaign rewards, docs.mmt.finance/overview/emissions.md)'],
+];
 
 const MONAD_RPC = 'https://rpc.monad.xyz';
 const MONAD_GENESIS_SUPPLY = 100_000_000_000;

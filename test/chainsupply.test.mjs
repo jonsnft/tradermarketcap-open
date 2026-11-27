@@ -2286,3 +2286,70 @@ test('monad: invalid configuration fails closed rather than guessing', async () 
   }
   assert.equal(globalThis.fetch, prev, 'globalThis.fetch is restored after test');
 });
+
+// ---------- Momentum (MMT, Sui) ----------
+// Real Sui mainnet GraphQL answer captured 2026-11-27 (test/fixtures/momentum-sui.json).
+const MMT_FX = JSON.parse(readFileSync(new URL('./fixtures/momentum-sui.json', import.meta.url), 'utf8'));
+const MMT_TYPE = '0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT';
+function fakeMomentum(edit = d => d) {
+  const calls = [];
+  globalThis.fetch = async (url, opts) => {
+    assert.equal(String(url), 'https://graphql.mainnet.sui.io/graphql');
+    const { query } = JSON.parse(opts.body);
+    calls.push(query);
+    const body = edit(structuredClone(MMT_FX.response));
+    return { ok: true, json: async () => body };
+  };
+  return calls;
+}
+const momentumRule = () => JSON.parse(readFileSync(new URL('../data-seed/coins.json', import.meta.url), 'utf8')).momentum;
+
+test('momentum: seed rule publishes the Sui total, lists the emission multisigs and withholds circulating', async () => {
+  const coin = momentumRule();
+  assert.equal(coin.symbol, 'MMT');
+  const calls = fakeMomentum();
+  const s = await readSupply(coin.supply);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].includes(MMT_TYPE));
+  assert.equal(calls[0], MMT_FX.query);
+  // 1,240,943,937 MMT minted, less 0.11331969 MMT at 0x0.
+  assert.equal(s.total, 1240943937 - 0.11331969);
+  assert.equal(s.circulating, null);
+  assert.equal(s.max, null);
+  assert.equal(s.checked, true);
+  assert.deepEqual(s.excluded.map(e => [e.holder, e.amount]), [
+    ['0x8bb5a9f523ef6a0eb74d7c0f636fd3fbff3489135ca330ec2e2e656d60314de1', 155943938], // emission reserve = 5 Nov mint
+    ['0x6c7ba0bccc5b6089500ce1d6c2b8fbd7bc5daeba3479ea268842f40fdfd3ec62', 64000000],  // Ignition campaign multisig
+  ]);
+  assert.ok(s.excluded.every(e => e.src.startsWith('https://suivision.xyz/account/0x')));
+  assert.match(s.note, /withheld/);
+  assert.match(s.note, /docs\.mmt\.finance\/overview\/mmt-token\.md/);
+});
+
+test('momentum: circulating is only computed when a rule explicitly allows it', async () => {
+  fakeMomentum();
+  const s = await readSupply({ method: 'momentum', circulating: true });
+  assert.equal(Math.round(s.circulating), 1240943937 - 155943938 - 64000000);
+});
+
+test('momentum: wrong coin metadata, a pool that is not MMT, bad balances or GraphQL errors fail the read', async () => {
+  const cases = [
+    [d => { d.data.coinMetadata.symbol = 'XMMT'; return d; }, /bad MMT coin metadata/],
+    [d => { d.data.coinMetadata.decimals = 6; return d; }, /bad MMT coin metadata/],
+    [d => { d.data.coinMetadata.supply = 'NaN'; return d; }, /bad MMT coin metadata/],
+    [d => { d.data.coinMetadata = null; return d; }, /bad MMT coin metadata/],
+    [d => { d.data.p0.asMoveObject.contents.type.repr = d.data.p0.asMoveObject.contents.type.repr.replace(MMT_TYPE, '0x2::sui::SUI'); return d; }, /not an MMT pool/],
+    [d => { d.data.p1 = null; return d; }, /not an MMT pool/],
+    [d => { d.data.w0.balance.totalBalance = '-1'; return d; }, /bad balance w0/],
+    [d => { d.data.w1 = null; return d; }, /bad balance w1/],
+    [d => { d.data.z.balance = null; return d; }, /bad balance z/],
+    [d => { d.data.w0.balance.totalBalance = '2000000000000000000'; return d; }, /exceed supply/],
+    [d => { d.data.coinMetadata.supply = '0'; return d; }, /exceed supply/],
+    [d => ({ errors: [{ message: 'timeout' }], data: d.data }), /bad GraphQL answer/],
+    [() => ({}), /bad GraphQL answer/],
+  ];
+  for (const [edit, re] of cases) {
+    fakeMomentum(edit);
+    await assert.rejects(readSupply({ method: 'momentum', circulating: false }), re);
+  }
+});

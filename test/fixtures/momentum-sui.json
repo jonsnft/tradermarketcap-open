@@ -1,0 +1,47 @@
+{
+  "capturedAt": "2026-11-27T17:25:33.671Z",
+  "url": "https://graphql.mainnet.sui.io/graphql",
+  "query": "{ coinMetadata(coinType: \"0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT\") { decimals symbol supply } z: address(address: \"0x0000000000000000000000000000000000000000000000000000000000000000\") { balance(coinType: \"0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT\") { totalBalance } } w0: address(address: \"0x8bb5a9f523ef6a0eb74d7c0f636fd3fbff3489135ca330ec2e2e656d60314de1\") { balance(coinType: \"0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT\") { totalBalance } } w1: address(address: \"0x6c7ba0bccc5b6089500ce1d6c2b8fbd7bc5daeba3479ea268842f40fdfd3ec62\") { balance(coinType: \"0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT\") { totalBalance } } p0: object(address: \"0xc7993ebf7a1e629a942f69e9b3a8dccc3a96db0df3991812578815a0dda08a91\") { asMoveObject { contents { type { repr } } } } p1: object(address: \"0x8fbcc943593b0e33f3fb15311cbf81d73f1ccf26c96b85ea290ff6dfcdbe4c9f\") { asMoveObject { contents { type { repr } } } } }",
+  "response": {
+    "data": {
+      "coinMetadata": {
+        "decimals": 9,
+        "symbol": "MMT",
+        "supply": "1240943937000000000"
+      },
+      "z": {
+        "balance": {
+          "totalBalance": "113319690"
+        }
+      },
+      "w0": {
+        "balance": {
+          "totalBalance": "155943938000000000"
+        }
+      },
+      "w1": {
+        "balance": {
+          "totalBalance": "64000000000000000"
+        }
+      },
+      "p0": {
+        "asMoveObject": {
+          "contents": {
+            "type": {
+              "repr": "0x70285592c97965e811e0c6f98dccc3a9c2b4ad854b3594faab9597ada267b860::pool::Pool<0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT,0xdba34672e30cb065b1f93e3ab55318768fd6fef66c15942c9f7cb846e2f900e7::usdc::USDC>"
+            }
+          }
+        }
+      },
+      "p1": {
+        "asMoveObject": {
+          "contents": {
+            "type": {
+              "repr": "0x70285592c97965e811e0c6f98dccc3a9c2b4ad854b3594faab9597ada267b860::pool::Pool<0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI,0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT>"
+            }
+          }
+        }
+      }
+    }
+  }
+}
